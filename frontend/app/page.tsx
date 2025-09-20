@@ -167,49 +167,62 @@ export default function Page() {
               padding: 16,
               borderRadius: 12,
               position: "relative",
+              maxHeight: "100vh",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
             }}
           >
             {v.title && <h3 style={{ marginTop: 0 }}>{v.title}</h3>}
-            {v.type === "chart" && v.spec && <VegaLiteChart spec={v.spec} />}
-            {v.type === "table" && v.table && (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      {v.table.columns.map((c) => (
-                        <th
-                          key={c}
-                          style={{
-                            textAlign: "left",
-                            borderBottom: "1px solid #374151",
-                            padding: 8,
-                          }}
-                        >
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {v.table.rows.map((row, i) => (
-                      <tr key={i}>
+            <div
+              style={{
+                marginTop: v.title ? 8 : 0,
+                overflow: "auto",
+                maxHeight: "100%",
+                width: "100%",
+              }}
+            >
+              {v.type === "chart" && v.spec && <VegaLiteChart spec={v.spec} />}
+              {v.type === "table" && v.table && (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
                         {v.table.columns.map((c) => (
-                          <td
+                          <th
                             key={c}
                             style={{
+                              textAlign: "left",
+                              borderBottom: "1px solid #374151",
                               padding: 8,
-                              borderBottom: "1px dashed #1f2937",
                             }}
                           >
-                            {row[c]}
-                          </td>
+                            {c}
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                    </thead>
+                    <tbody>
+                      {v.table.rows.map((row, i) => (
+                        <tr key={i}>
+                          {v.table.columns.map((c) => (
+                            <td
+                              key={c}
+                              style={{
+                                padding: 8,
+                                borderBottom: "1px dashed #1f2937",
+                              }}
+                            >
+                              {row[c]}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
           </div>
         ))}
       </div>
