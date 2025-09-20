@@ -109,6 +109,9 @@ def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
     return walk(s)
 
 
+PROFILE_MAX_ROWS = 2000
+
+
 def dataset_profile(
     df: pd.DataFrame,
     *,
@@ -120,29 +123,35 @@ def dataset_profile(
     Keep it small: truncate long strings and cap lists.
     """
     nrows = len(df)
+    work_df = df
+    if nrows > PROFILE_MAX_ROWS:
+        # sample deterministically so repeated calls stay stable and fast
+        work_df = df.sample(PROFILE_MAX_ROWS, random_state=0)
+    work_rows = len(work_df)
     cols = []
     for i, c in enumerate(df.columns):
         if i >= max_cols:
             break
         s = df[c]
+        s_sample = work_df[c] if c in work_df.columns else s
         dtype = str(s.dtype)
         missing = int(s.isna().sum())
-        unique = int(s.nunique(dropna=True))
+        unique = int(s_sample.nunique(dropna=True))
         info: Dict[str, Any] = {
             "name": c,
             "dtype": dtype,
             "missing_pct": _pct(missing, nrows),
             "unique": unique,
-            "examples": _example_values(s, 3),
+            "examples": _example_values(s_sample, 3),
         }
 
         if pd.api.types.is_numeric_dtype(s):
-            s_num = pd.to_numeric(s, errors="coerce")
+            s_num = pd.to_numeric(s_sample, errors="coerce")
             info["num_stats"] = {
-                "min": float(s_num.min()) if nrows else None,
-                "max": float(s_num.max()) if nrows else None,
-                "mean": float(s_num.mean()) if nrows else None,
-                "std": float(s_num.std()) if nrows else None,
+                "min": float(s_num.min()) if work_rows else None,
+                "max": float(s_num.max()) if work_rows else None,
+                "mean": float(s_num.mean()) if work_rows else None,
+                "std": float(s_num.std()) if work_rows else None,
             }
             if include_quants:
                 qs = s_num.quantile([0.25, 0.5, 0.75]).to_dict()
@@ -154,22 +163,22 @@ def dataset_profile(
                     }
                 )
         elif pd.api.types.is_datetime64_any_dtype(s):
-            s_dt = pd.to_datetime(s, errors="coerce")
+            s_dt = pd.to_datetime(s_sample, errors="coerce")
             info["datetime_range"] = {
                 "min": s_dt.min().isoformat() if s_dt.notna().any() else None,
                 "max": s_dt.max().isoformat() if s_dt.notna().any() else None,
             }
         else:
-            info["top_values"] = _topk_counts(s, 5)
+            info["top_values"] = _topk_counts(s_sample, 5)
 
         cols.append(info)
 
     profile: Dict[str, Any] = {"row_count": nrows, "columns": cols}
 
     # 👇 add 1–3 sample rows (stringified and truncated) for extra context
-    if nrows > 0:
+    if work_rows > 0:
         sample = (
-            df.sample(min(3, nrows), random_state=0)
+            work_df.sample(min(3, work_rows), random_state=0)
             .astype(str)
             .map(lambda s: s[:80])
             .to_dict(orient="records")
@@ -423,7 +432,7 @@ def handle_llm_nlq(
         raise ValueError("vega_lite must be an object")
 
     # fix field casing/spelling to match dataframe columns
-    spec = _canon_fields_in_spec(spec, df)
+    spec = _canon_fields_in_spec(spec, data)
 
     # the backend injects data; remove any model-provided data block to avoid conflicts
     if "data" in spec:

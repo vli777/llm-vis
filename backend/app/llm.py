@@ -375,12 +375,62 @@ def chat_json(system_prompt: str, user_message: str) -> dict:
     return _coerce_plan_object(obj)
 
 
+def _short_error(exc: Exception) -> str:
+    msg = str(exc)
+    if not msg:
+        return exc.__class__.__name__
+    msg = msg.replace("\n", " ").strip()
+    return msg[:200]
+
+
+def _plan_to_dict(plan: Plan | dict) -> dict:
+    if isinstance(plan, Plan):
+        return plan.model_dump(by_alias=True, exclude_none=True)
+    return plan
+
+
 def plan_from_llm(
     columns_md: str,
     user_prompt: str,
     client_ctx: dict | None,
     *,
     profile: dict | None = None,
+    max_attempts: int = 2,
 ) -> dict:
-    user_msg = build_user_prompt(columns_md, user_prompt, client_ctx, profile=profile)
-    return chat_json(SYSTEM_PROMPT, user_msg)
+    """Ask the LLM for a visualization plan with lightweight retry logic."""
+
+    attempts: list[dict] = []
+    # first attempt uses full profile (if provided); later attempts drop it to reduce prompt size
+    if profile is not None:
+        attempts.append({"profile": profile})
+    attempts.append({"profile": None})
+    while len(attempts) < max_attempts:
+        attempts.append({"profile": None})
+
+    last_error: Exception | None = None
+
+    for attempt in attempts[: max(1, max_attempts)]:
+        prof = attempt.get("profile")
+        # keep profile on first pass; later passes fall back to the lighter prompt
+        user_msg = build_user_prompt(columns_md, user_prompt, client_ctx, profile=prof)
+        if last_error is not None:
+            user_msg += (
+                "\n\nPrevious response could not be parsed because: "
+                + _short_error(last_error)
+                + "\nReturn EXACTLY one valid JSON object as specified."
+            )
+        try:
+            return _plan_to_dict(chat_json(SYSTEM_PROMPT, user_msg))
+        except Exception as exc:  # noqa: BLE001 - bubble up after retries
+            last_error = exc
+            # structured-output fallback (tolerates providers ignoring response_format)
+            try:
+                fallback = chat_plan_structured(SYSTEM_PROMPT, user_msg)
+                return _plan_to_dict(fallback)
+            except Exception as exc2:  # noqa: BLE001 - capture the real failure
+                last_error = exc2
+                continue
+
+    if last_error is not None:
+        raise LLMError(f"plan_failed_after_retries: {_short_error(last_error)}")
+    raise LLMError("plan_failed_after_retries: unknown error")
