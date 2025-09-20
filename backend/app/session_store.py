@@ -13,25 +13,3 @@ def get_session(session_id: str) -> Dict[str, pd.DataFrame]:
     if session_id not in SESSIONS:
         SESSIONS[session_id] = {}
     return SESSIONS[session_id]
-
-def load_samples() -> None:
-    """Load all CSVs from backend/data into SAMPLE_TABLES."""
-    SAMPLE_TABLES.clear()
-    data_dir = Path(__file__).resolve().parents[1] / "data"
-    if not data_dir.exists():
-        return
-    for p in data_dir.glob("*.csv"):
-        try:
-            df = pd.read_csv(p)
-            SAMPLE_TABLES[p.stem] = df
-        except Exception:
-            # ignore unreadable files
-            pass
-
-def ensure_seeded(session_id: str) -> Dict[str, pd.DataFrame]:
-    """If the session has no tables yet, copy the samples into it."""
-    sess = get_session(session_id)
-    if not sess and SAMPLE_TABLES:
-        for name, df in SAMPLE_TABLES.items():
-            sess[name] = df.copy()
-    return sess
