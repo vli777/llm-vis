@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import SystemMessage, HumanMessage
+from .prompts import SYSTEM_PROMPT
 
 load_dotenv()
 
@@ -43,28 +44,6 @@ class Plan(BaseModel):
     operations: List[Operation] = Field(default_factory=list)
     vega_lite: Optional[Dict[str, Any]] = None
 
-SYSTEM_INSTR = """You generate data-viz plans as JSON for a backend executor.
-Rules:
-- Use ONLY the provided dataset columns; never invent columns.
-- intent is "chart" or "table".
-- vega_lite must be valid Vega-Lite v5 JSON if intent="chart"; set null for tables.
-- Data is computed in the backend via 'operations'. Supported ops:
-  - value_counts: {op:"value_counts", col:<string>, as:[<key_col>,"n"]}
-  - explode_counts: {op:"explode_counts", col:<string>, sep:<string>, as:[<key_col>,"n"]}
-  - scatter_data: {op:"scatter_data", x:<string>, y:<string>, extras:[<string>...], log:<bool>}
-  - corr_pair: {op:"corr_pair", x:<string>, y:<string>}
-Output must match the schema exactly.
-"""
-
-def build_user_prompt(columns_markdown: str, user_prompt: str) -> str:
-    return f"""Dataset columns:
-{columns_markdown}
-
-User prompt:
-{user_prompt}
-
-Return a plan with keys: intent, title, operations, vega_lite.
-"""
 
 def _extract_json_block(text: str) -> str:
     """Grab the first top-level {...} or [...] block (handles code fences / prefaces)."""
@@ -129,13 +108,16 @@ def chat_json(columns_markdown: str, user_prompt: str) -> Dict[str, Any]:
     except Exception as e:
         raise LLMError(f"json_parse_failed: {e}; raw_head={content[:200]}")
 
-def plan_from_llm(columns_markdown: str, user_prompt: str) -> Dict[str, Any]:
-    """
-    Returns a dict plan matching Plan model (for your executor).
-    Tries structured output first; falls back to JSON parsing.
-    """
+def plan_from_llm(columns_markdown: str, user_prompt: str, client_ctx: dict | None) -> Dict[str, Any]:
     try:
-        plan = chat_plan_structured(columns_markdown, user_prompt)
+        plan = chat_plan_structured(
+            SYSTEM_PROMPT,
+            build_user_prompt(columns_markdown, user_prompt, client_ctx)
+        )
         return plan.model_dump(by_alias=True)
     except Exception:
-        return chat_json(columns_markdown, user_prompt)
+        j = chat_json(
+            SYSTEM_PROMPT,
+            build_user_prompt(columns_markdown, user_prompt, client_ctx)
+        )
+        return j
