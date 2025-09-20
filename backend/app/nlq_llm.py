@@ -3,6 +3,7 @@ from typing import Dict, Any, Tuple, List, Optional
 
 import numpy as np
 import pandas as pd
+import math
 
 from .llm import plan_from_llm as lc_plan_from_llm, columns_markdown  
 
@@ -109,7 +110,7 @@ def dataset_profile(
         sample = (
             df.sample(min(3, nrows), random_state=0)
             .astype(str)
-            .applymap(lambda s: s[:80])
+            .map(lambda s: s[:80])
             .to_dict(orient="records")
         )
         profile["sample_rows"] = sample
