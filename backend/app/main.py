@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from app.session_store import get_session, ensure_seeded, load_samples
 from app.models import NLQRequest, NLQResponse, TableInfo
-from app.nlq import route_prompt
+from app.nlq_llm import handle_llm_nlq 
 import pandas as pd
 import io
 from dotenv import load_dotenv
@@ -62,7 +62,7 @@ async def nlq(request: Request, body: NLQRequest):
     # sess = get_session(sid)
     sess = ensure_seeded(sid) # auto-seed if empty
     try:
-        result = route_prompt(body.prompt, sess)
+        result = handle_llm_nlq(body.prompt, sess)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
