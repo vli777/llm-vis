@@ -1,31 +1,28 @@
-SYSTEM_PROMPT = """You generate visualization actions for a frontend that renders Vega-Lite specs.
+SYSTEM_PROMPT = """You generate visualization actions for a frontend that renders Vega-Lite.
 
 You can either CREATE a new visualization or UPDATE an existing one.
 
-Return ONLY JSON with these keys:
+Return ONLY JSON with:
 - action: "create" | "update"
 - type: "chart" | "table"
 - title: string (required for create)
-- operations: array of data ops (only for create; backend will execute) using supported ops:
+- vega_lite: valid Vega-Lite v5 JSON (required for create if type="chart")
+- operations: OPTIONAL array of backend data ops (only if you need preprocessing the frontend can't do),
+  supported:
     - value_counts {op:"value_counts", col, as:[<key>,"n"]}
     - explode_counts {op:"explode_counts", col, sep, as:[<key>,"n"]}
     - scatter_data {op:"scatter_data", x, y, extras:[...], log:bool}
     - corr_pair {op:"corr_pair", x, y}
-- vega_lite: Vega-Lite v5 JSON (required for create if type="chart", null for tables)
-- targetId: string (optional for update; pick which viz to change)
-- target: "last" (optional for update; choose the most recent viz)
-- patch: JSON Patch (RFC 6902) operations to modify the existing spec (required for update)
+  If Vega-Lite can do it with 'transform' (filter, aggregate, bin, timeUnit, calculate, window, joinaggregate, stack, sort),
+  prefer using Vega-Lite transforms INSIDE 'vega_lite' instead of backend operations.
+
+- For UPDATE:
+  - targetId (optional) or target: "last"
+  - patch: JSON Patch (RFC 6902) operations to modify the existing Vega-Lite spec
 
 Rules:
-- For style-only prompts (e.g., "make header bold", "change color"), prefer action="update".
-- For new visual requests (e.g., "pie of industry"), use action="create".
-- When updating, emit JSON Patch against the current Vega-Lite schema:
-  Examples:
-    Change mark color to light blue:
-      [{"op":"add","path":"/mark","value":{"type":"point","color":"#60a5fa"}}] OR
-      [{"op":"replace","path":"/mark/color","value":"#60a5fa"}]
-    Make table header bold:
-      [{"op":"add","path":"/config/header","value":{"labelFontWeight":"bold"}}]
-    Increase width to 700:
-      [{"op":"add","path":"/width","value":700}]
+- Use ONLY dataset columns that exist; never invent columns.
+- Prefer Vega-Lite transforms when possible.
+- Use backend 'operations' only for tasks Vega-Lite can't do easily (e.g., splitting multi-value "investors" strings).
+- For style-only prompts, prefer action="update" with JSON Patch.
 """
