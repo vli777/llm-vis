@@ -1,9 +1,10 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { UploadZone } from "../components/UploadZone";
 import { PromptBar } from "../components/PromptBar";
 import { VegaLiteChart } from "../components/VegaLiteChart";
-import { apiFetch, apiGetJSON, apiPostJSON } from "../lib/api";
+import { apiGetJSON, apiPostJSON } from "../lib/api";
+import { applyVizPatch } from "../lib/viz";
 
 type Viz = {
   id: string;
@@ -16,18 +17,16 @@ type Viz = {
 export default function Page() {
   const [tables, setTables] = useState<any[]>([]);
   const [viz, setViz] = useState<Viz[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const latestReq = useRef<number>(0);
 
   const refreshTables = async () => {
-    setError(null);
     try {
       const r = await apiGetJSON<{ tables: any[] }>("/tables");
       setTables(r.tables || []);
-    } catch (e: any) {
-      setError(e.message);
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -38,6 +37,7 @@ export default function Page() {
   const onUploaded = () => refreshTables();
 
   const onPrompt = async (prompt: string) => {
+    // cancel any in-flight request
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -47,15 +47,44 @@ export default function Page() {
     setPending(true);
 
     try {
-      const res = await apiFetch("/nlq", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-        signal: controller.signal,
-      }).then((r) => r.json());
+      const res = await apiPostJSON(
+        "/nlq",
+        { prompt },
+        { signal: controller.signal }
+      );
 
+      // ignore late responses
       if (latestReq.current !== myReqId) return;
 
+      // --- handle update actions (JSON Patch) ---
+      if (res?.action === "update") {
+        setViz((cards) => {
+          if (!cards.length) return cards;
+          let idx = -1;
+          if (res.targetId) idx = cards.findIndex((c) => c.id === res.targetId);
+          if (idx < 0 && res.target === "last") idx = 0; // newest-first list
+          if (idx < 0) idx = 0;
+
+          const target = cards[idx];
+          if (!target || target.type !== "chart" || !target.spec) return cards;
+
+          // if model sent a full replacement spec, prefer overwrite
+          if (res.spec) {
+            const next = cards.slice();
+            next[idx] = { ...target, spec: res.spec };
+            return next;
+          }
+
+          // otherwise apply JSON Patch
+          const patched = applyVizPatch(target.spec, res.patch || []);
+          const next = cards.slice();
+          next[idx] = { ...target, spec: patched };
+          return next;
+        });
+        return; // done
+      }
+
+      // --- create actions (default path) ---
       if (res.type === "chart") {
         setViz((v) => [
           {
@@ -91,21 +120,8 @@ export default function Page() {
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <h1 style={{ fontSize: 28, marginBottom: 8, marginTop: 0, flex: 1 }}>
           AI Data Vis
-        </h1>        
+        </h1>
       </div>
-
-      {error && (
-        <div
-          style={{
-            background: "#7f1d1d",
-            padding: 8,
-            borderRadius: 8,
-            marginBottom: 8,
-          }}
-        >
-          {error}
-        </div>
-      )}
 
       <UploadZone onUploaded={onUploaded} />
 
