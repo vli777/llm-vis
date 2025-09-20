@@ -9,21 +9,21 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "lucide-react": "^0.544.0",
     "next": "14.2.5",
     "react": "18.2.0",
     "react-dom": "18.2.0",
     "react-vega": "7.6.0",
+    "uuid": "9.0.1",
     "vega": "5.30.0",
-    "vega-lite": "5.17.0",
     "vega-embed": "6.24.0",
-    "axios": "1.6.7",
-    "uuid": "9.0.1"
+    "vega-lite": "5.17.0"
   },
   "devDependencies": {
-    "@types/react": "18.2.45",
     "@types/node": "20.11.24",
-    "typescript": "5.4.2",
+    "@types/react": "18.2.45",
     "eslint": "8.57.0",
-    "eslint-config-next": "14.2.5"
+    "eslint-config-next": "14.2.5",
+    "typescript": "5.4.2"
   }
 }
