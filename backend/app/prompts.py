@@ -27,6 +27,7 @@ DATA HANDLING:
 COLUMN RULES:
 - Use ONLY columns present in the provided schema/profile; never invent columns.
 - Respect types (nominal/ordinal/quantitative/temporal) based on profile hints.
+- Use exact column names (case-sensitive) as listed in the schema.
 
 CHART GUIDELINES:
 - Include reasonable encodings (axes, color) and tooltips.
