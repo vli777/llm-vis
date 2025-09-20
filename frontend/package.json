@@ -1,0 +1,29 @@
+{
+  "name": "ai-data-vis",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "next": "14.2.5",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "react-vega": "7.6.0",
+    "vega": "5.30.0",
+    "vega-lite": "5.17.0",
+    "vega-embed": "6.24.0",
+    "axios": "1.6.7",
+    "uuid": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "18.2.45",
+    "@types/node": "20.11.24",
+    "typescript": "5.4.2",
+    "eslint": "8.57.0",
+    "eslint-config-next": "14.2.5"
+  }
+}
