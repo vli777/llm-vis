@@ -1,8 +1,8 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from app.session_store import get_session, ensure_seeded, load_samples
+from app.session_store import get_session
 from app.models import NLQRequest, NLQResponse, TableInfo
-from app.nlq_llm import handle_llm_nlq 
+from app.nlq_llm import handle_llm_nlq
 import pandas as pd
 import io
 from dotenv import load_dotenv
@@ -11,10 +11,6 @@ import logging
 logger = logging.getLogger("uvicorn.error")
 load_dotenv()
 app = FastAPI(title="AI Data Vis", description="Turn prompts into charts")
-
-@app.on_event("startup") # load sample data at startup
-def _load_seed_data():
-    load_samples()
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,7 +36,7 @@ async def upload(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Failed to read CSV: {e}")
     sess = get_session(sid)
     # simple unique table name
-    base = file.filename.rsplit(".",1)[0]
+    base = file.filename.rsplit(".", 1)[0]
     name = base
     i = 1
     while name in sess:
@@ -52,21 +48,17 @@ async def upload(request: Request, file: UploadFile = File(...)):
 @app.get("/tables")
 async def tables(request: Request):
     sid = require_session_id(request)
-    # sess = get_session(sid)
-    sess = ensure_seeded(sid) # auto-seed if empty
-    info = [TableInfo(name=k, rows=len(v)).model_dump() for k,v in sess.items()]
+    sess = get_session(sid)
+    info = [TableInfo(name=k, rows=len(v)).model_dump() for k, v in sess.items()]
     return {"tables": info}
-
 
 @app.post("/nlq", response_model=NLQResponse)
 async def nlq(request: Request, body: NLQRequest):
     sid = require_session_id(request)
-    sess = ensure_seeded(sid)
+    sess = get_session(sid)
     try:
-        return handle_llm_nlq(body.prompt, sess)
+        return handle_llm_nlq(body.prompt, sess, client_ctx=body.clientContext or {})
     except Exception as e:
-        # Log full details server-side
         logger.exception("NLQ failed: %s", e)
-        # Send generic message to client
         raise HTTPException(status_code=400, detail="Request failed")
 
