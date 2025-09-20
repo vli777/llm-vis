@@ -27,9 +27,15 @@ export default function Page() {
   const refreshTables = async () => {
     try {
       const r = await apiGetJSON<{ tables: any[] }>("/tables");
-      setTables(r.tables || []);
+      const next = r.tables || [];
+      setTables(next);
+      if (next.length === 0) {
+        setViz([]);
+      }
     } catch (e) {
       console.error(e);
+      setTables([]);
+      setViz([]);
     }
   };
 
