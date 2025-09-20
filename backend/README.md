@@ -5,6 +5,14 @@
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
+
+## Env
+```
+LLM_BASE_URL=https://integrate.api.nvidia.com/v1    
+LLM_API_KEY=***
+LLM_MODEL=openai/gpt-oss-120b
+```
+
 ## Endpoints
 - `POST /upload` (multipart) with header `X-Session-Id`
 - `GET /tables` with header `X-Session-Id`
