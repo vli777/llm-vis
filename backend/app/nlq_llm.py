@@ -5,7 +5,11 @@ import numpy as np
 import pandas as pd
 import math
 
-from .llm import plan_from_llm as lc_plan_from_llm, columns_markdown  
+from .llm import (
+    plan_from_llm as lc_plan_from_llm,
+    columns_markdown,
+    _coerce_plan_object,
+)
 
 
 # ---------- helpers ----------
@@ -18,8 +22,10 @@ def df_json_safe(df: pd.DataFrame) -> pd.DataFrame:
     tmp = tmp.astype(object)
     return tmp.where(pd.notna(tmp), None)
 
+
 def df_to_records_safe(df: pd.DataFrame) -> list[dict]:
     return df_json_safe(df).to_dict(orient="records")
+
 
 def pick_table(tables: Dict[str, pd.DataFrame]) -> Tuple[str, pd.DataFrame]:
     """Choose a table to operate on. Currently: largest by row-count."""
@@ -43,9 +49,11 @@ def resolve_col(name: Optional[str], df: pd.DataFrame) -> Optional[str]:
     key = name.lower()
     if key in lower_map:
         return lower_map[key]
+
     # normalize spaces/underscores/hyphens
     def norm(s: str) -> str:
         return re.sub(r"[\s_\-]+", "", s.lower())
+
     target = norm(name)
     for c in candidates:
         if norm(c) == target:
@@ -53,17 +61,53 @@ def resolve_col(name: Optional[str], df: pd.DataFrame) -> Optional[str]:
     # no luck
     return name if name in df.columns else None
 
+
 def _pct(n: int, d: int) -> float:
     return 0.0 if d <= 0 else round(100.0 * n / d, 2)
+
 
 def _example_values(s: pd.Series, k: int = 3):
     vals = s.dropna().unique()[:k]
     # stringify but keep short
     return [str(v)[:80] for v in vals]
 
+
 def _topk_counts(s: pd.Series, k: int = 5) -> list[dict]:
     vc = s.astype("string").fillna("∅").value_counts().head(k)
     return [{"value": str(i)[:80], "n": int(v)} for i, v in vc.items()]
+
+
+def _fix_field(value, df):
+    if not isinstance(value, str):
+        return value
+    resolved = resolve_col(value, df)
+    return resolved or value
+
+
+def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
+    import copy
+
+    s = copy.deepcopy(spec)
+
+    def walk(x):
+        if isinstance(x, dict):
+            # common Vega-Lite places
+            if "field" in x:
+                x["field"] = _fix_field(x["field"], df)
+            if "groupby" in x and isinstance(x["groupby"], list):
+                x["groupby"] = [_fix_field(v, df) for v in x["groupby"]]
+            if "fields" in x and isinstance(x["fields"], list):
+                x["fields"] = [_fix_field(v, df) for v in x["fields"]]
+            if "sort" in x and isinstance(x["sort"], dict) and "field" in x["sort"]:
+                x["sort"]["field"] = _fix_field(x["sort"]["field"], df)
+            for k, v in x.items():
+                x[k] = walk(v)
+        elif isinstance(x, list):
+            return [walk(v) for v in x]
+        return x
+
+    return walk(s)
+
 
 def dataset_profile(
     df: pd.DataFrame,
@@ -78,7 +122,7 @@ def dataset_profile(
     nrows = len(df)
     cols = []
     for i, c in enumerate(df.columns):
-        if i >= max_cols: 
+        if i >= max_cols:
             break
         s = df[c]
         dtype = str(s.dtype)
@@ -102,7 +146,13 @@ def dataset_profile(
             }
             if include_quants:
                 qs = s_num.quantile([0.25, 0.5, 0.75]).to_dict()
-                info["num_stats"].update({f"q{int(q*100)}": float(v) for q, v in qs.items() if not math.isnan(v)})
+                info["num_stats"].update(
+                    {
+                        f"q{int(q * 100)}": float(v)
+                        for q, v in qs.items()
+                        if not math.isnan(v)
+                    }
+                )
         elif pd.api.types.is_datetime64_any_dtype(s):
             s_dt = pd.to_datetime(s, errors="coerce")
             info["datetime_range"] = {
@@ -128,9 +178,13 @@ def dataset_profile(
 
     return profile
 
+
 # ---------- LLM plan ----------
 
-def plan_from_llm(prompt: str, df: pd.DataFrame, client_ctx: Optional[dict]) -> Dict[str, Any]:
+
+def plan_from_llm(
+    prompt: str, df: pd.DataFrame, client_ctx: Optional[dict]
+) -> Dict[str, Any]:
     prof = dataset_profile(df, max_cols=30)
     cols_md = columns_markdown(df)
     # pass both schema (markdown) and profile (JSON) down
@@ -138,6 +192,7 @@ def plan_from_llm(prompt: str, df: pd.DataFrame, client_ctx: Optional[dict]) -> 
 
 
 # ---------- execution primitives ----------
+
 
 def _ensure_cols(df: pd.DataFrame, cols: List[str]) -> List[str]:
     resolved = []
@@ -181,14 +236,14 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
     """
     result = df.copy()
 
-    for op in (ops or []):
+    for op in ops or []:
         kind = op.get("op")
 
         if kind == "value_counts":
             col = resolve_col(op.get("col"), result)
             if not col or col not in result.columns:
                 raise ValueError(f"Column not found for value_counts: {op.get('col')}")
-            key, ncol = (op.get("as") or [col, "n"])
+            key, ncol = op.get("as") or [col, "n"]
             limit = op.get("limit")
             series = result[col].astype("string").fillna("∅")
             out = series.value_counts(dropna=False)
@@ -208,10 +263,12 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
                         col = g
                         break
             if not col or col not in result.columns:
-                raise ValueError(f"Column not found for explode_counts: {op.get('col')}")
+                raise ValueError(
+                    f"Column not found for explode_counts: {op.get('col')}"
+                )
 
             sep = op.get("sep") or r"[;,/|]"
-            key, ncol = (op.get("as") or ["value", "n"])
+            key, ncol = op.get("as") or ["value", "n"]
             limit = op.get("limit")
 
             s = result[col].fillna("").astype(str).str.split(sep)
@@ -240,17 +297,24 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             # Optional log transform
             if op.get("log"):
                 # drop non-positive before log
-                result = result[(pd.to_numeric(result[x], errors="coerce") > 0) & (pd.to_numeric(result[y], errors="coerce") > 0)]
+                result = result[
+                    (pd.to_numeric(result[x], errors="coerce") > 0)
+                    & (pd.to_numeric(result[y], errors="coerce") > 0)
+                ]
                 result[x] = np.log(pd.to_numeric(result[x], errors="coerce"))
                 result[y] = np.log(pd.to_numeric(result[y], errors="coerce"))
 
-            result = result[cols].replace([np.inf, -np.inf], np.nan).dropna()
+            result = (
+                result[cols].replace([np.inf, -np.inf], np.nan).dropna(subset=[x, y])
+            )
 
         elif kind == "corr_pair":
             x = resolve_col(op.get("x"), result)
             y = resolve_col(op.get("y"), result)
             if not x or not y or x not in result.columns or y not in result.columns:
-                raise ValueError(f"Columns not found for corr_pair: {op.get('x')}, {op.get('y')}")
+                raise ValueError(
+                    f"Columns not found for corr_pair: {op.get('x')}, {op.get('y')}"
+                )
             _coerce_numeric_inplace(result, [x, y])
             sub = result[[x, y]].replace([np.inf, -np.inf], np.nan).dropna()
             if len(sub) == 0:
@@ -259,8 +323,12 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             else:
                 p = sub[x].corr(sub[y], method="pearson")
                 s = sub[x].corr(sub[y], method="spearman")
-                result.attrs["pearson"]  = float(p) if (p is not None and math.isfinite(p)) else None
-                result.attrs["spearman"] = float(s) if (s is not None and math.isfinite(s)) else None
+                result.attrs["pearson"] = (
+                    float(p) if (p is not None and math.isfinite(p)) else None
+                )
+                result.attrs["spearman"] = (
+                    float(s) if (s is not None and math.isfinite(s)) else None
+                )
 
         else:
             raise ValueError(f"Unsupported op: {kind}")
@@ -271,34 +339,45 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
 
     return result
 
+
 # ---------- spec attachment ----------
+
 
 def attach_values_to_spec(spec: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
     spec = dict(spec or {})
-    spec["$schema"] = spec.get("$schema") or "https://vega.github.io/schema/vega-lite/v5.json"
+    spec["$schema"] = (
+        spec.get("$schema") or "https://vega.github.io/schema/vega-lite/v5.json"
+    )
     spec["data"] = {"values": df_to_records_safe(df)}  # <-- SAFE
     return spec
 
+
 # ---------- main entry ----------
 
-def handle_llm_nlq(prompt: str, tables: Dict[str, pd.DataFrame], client_ctx: Optional[dict] = None) -> Dict[str, Any]:
-    """
-    LLM-only path: the model returns either:
-      - action="create" -> we compute ops and return a chart/table
-      - action="update" -> we pass JSON Patch + target info to the FE to patch an existing chart
-    """
-    _, df = pick_table(tables)
-    plan = plan_from_llm(prompt, df, client_ctx)
+import json
 
-    # Normalize keys the model might vary on
+
+def handle_llm_nlq(
+    prompt: str,
+    tables: Dict[str, pd.DataFrame],
+    client_ctx: Optional[dict] = None,
+) -> Dict[str, Any]:
+    # pick a table
+    _, df = pick_table(tables)
+
+    # plan (coerce list/str -> dict)
+    plan = plan_from_llm(prompt, df, client_ctx)
+    plan = _coerce_plan_object(plan)
+
+    # normalize keys
     action = (plan.get("action") or "create").lower()
     vtype = (plan.get("type") or plan.get("intent") or "chart").lower()
 
+    # ----- UPDATE path -----
     if action == "update":
         patch = plan.get("patch") or []
         if not isinstance(patch, list) or not patch:
             raise ValueError("Update requested but no patch provided.")
-        # Targeting info (optional): targetId or 'last'
         payload = {"type": vtype, "action": "update", "patch": patch}
         if plan.get("targetId"):
             payload["targetId"] = plan["targetId"]
@@ -306,22 +385,49 @@ def handle_llm_nlq(prompt: str, tables: Dict[str, pd.DataFrame], client_ctx: Opt
             payload["target"] = plan["target"]
         return payload
 
-    # action == "create"
+    # ----- CREATE path -----
     title = plan.get("title") or "Result"
-    ops = plan.get("operations", [])
-    spec = plan.get("vega_lite")
+    ops = plan.get("operations") or []
+    if not isinstance(ops, list):
+        # be forgiving; some models send a single object
+        ops = [ops] if isinstance(ops, dict) else []
 
+    # run backend ops to produce the data used by either table or chart
     data = exec_operations(df, ops)
 
+    # decide on table vs chart
+    spec = plan.get("vega_lite")
+
+    # TABLE (or no spec)
     if vtype == "table" or spec is None:
         return {
             "type": "table",
             "action": "create",
             "title": title,
-            "table": {
-                "columns": list(data.columns),
-                "rows": df_to_records_safe(data),  # <-- SAFE
-            },
+            "table": {"columns": list(data.columns), "rows": df_to_records_safe(data)},
         }
 
-    return {"type": "chart", "action": "create", "title": title, "spec": attach_values_to_spec(spec, data)}
+    # CHART
+    # tolerate the spec being a JSON string
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except Exception:
+            raise ValueError("vega_lite must be an object or valid JSON string")
+
+    if not isinstance(spec, dict):
+        raise ValueError("vega_lite must be an object")
+
+    # fix field casing/spelling to match dataframe columns
+    spec = _canon_fields_in_spec(spec, df)
+
+    # the backend injects data; remove any model-provided data block to avoid conflicts
+    if "data" in spec:
+        spec.pop("data", None)
+
+    return {
+        "type": "chart",
+        "action": "create",
+        "title": title,
+        "spec": attach_values_to_spec(spec, data),
+    }
