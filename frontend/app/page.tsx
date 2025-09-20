@@ -5,6 +5,9 @@ import { PromptBar } from "../components/PromptBar";
 import { VegaLiteChart } from "../components/VegaLiteChart";
 import { apiGetJSON, apiPostJSON } from "../lib/api";
 import { applyVizPatch } from "../lib/viz";
+import { humanBytes } from "../lib/utils";
+import { TableInfo } from "../types/tables";
+import TablesPanel from "@/components/TablesPanel";
 
 type Viz = {
   id: string;
@@ -143,13 +146,7 @@ export default function Page() {
         >
           <div style={{ flex: 1, minWidth: 260 }}>
             <h3>Tables in session</h3>
-            <ul>
-              {tables.map((t: any) => (
-                <li key={t.name} style={{ opacity: 0.9 }}>
-                  {t.name} <span style={{ opacity: 0.6 }}>({t.rows} rows)</span>
-                </li>
-              ))}
-            </ul>
+            <TablesPanel tables={tables} />
           </div>
         </div>
       </div>
