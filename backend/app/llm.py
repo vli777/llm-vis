@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import SystemMessage, HumanMessage
 from .prompts import SYSTEM_PROMPT
+from .models import Plan, Operation
 
 load_dotenv()
 
@@ -27,37 +28,40 @@ def _get_llm(temperature: float = 0.2) -> ChatNVIDIA:
         api_key=API_KEY,
     )
 
-# ----- Pydantic schema for structured output (preferred) -----
-class Operation(BaseModel):
-    op: str
-    col: Optional[str] = None
-    x: Optional[str] = None
-    y: Optional[str] = None
-    sep: Optional[str] = None
-    as_: Optional[List[str]] = Field(default=None, alias="as")
-    extras: Optional[List[str]] = None
-    log: Optional[bool] = None
+# ---------- helpers for prompt construction ----------
 
-class Plan(BaseModel):
-    intent: Literal["chart", "table"]
-    title: str
-    operations: List[Operation] = Field(default_factory=list)
-    vega_lite: Optional[Dict[str, Any]] = None
+def build_user_prompt(columns_markdown: str, user_prompt: str, client_ctx: Dict[str, Any] | None = None) -> str:
+    """Compose the user message with schema + optional client context (cards, selection)."""
+    ctx_txt = ""
+    if client_ctx:
+        cards = client_ctx.get("cards") or []
+        selected = client_ctx.get("selection")
+        if cards:
+            lines = [f"- {c.get('id')} :: {c.get('title')}" for c in cards]
+            ctx_txt = "Existing visualizations:\n" + "\n".join(lines)
+        if selected:
+            ctx_txt += ("\n" if ctx_txt else "") + f"Selected: {selected}"
+    return f"""Dataset columns:
+{columns_markdown}
 
+{ctx_txt if ctx_txt else ""}
+
+User prompt:
+{user_prompt}
+
+Return ONLY JSON with the keys described by the system prompt."""
+
+# ---------- robust JSON extraction ----------
 
 def _extract_json_block(text: str) -> str:
-    """Grab the first top-level {...} or [...] block (handles code fences / prefaces)."""
     if not text:
         raise ValueError("empty LLM response")
-    # strip code fences if present
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.MULTILINE)
-    # try direct parse
     try:
         json.loads(text)
         return text
     except Exception:
         pass
-    # fallback: find first JSON object/array by bracket matching
     start = None
     depth = 0
     for i, ch in enumerate(text):
@@ -74,31 +78,29 @@ def _extract_json_block(text: str) -> str:
             depth -= 1
             if depth == 0:
                 candidate = text[start:j+1]
-                json.loads(candidate)  # will raise if invalid
+                json.loads(candidate)
                 return candidate
     raise ValueError("unterminated JSON")
 
-def chat_plan_structured(columns_markdown: str, user_prompt: str) -> Plan:
+
+# ---------- LLM invocations ----------
+
+def chat_plan_structured(system_prompt: str, user_message: str) -> Plan:
     """Use LangChain structured output (Pydantic) for robust JSON."""
     llm = _get_llm()
     try:
         llm_struct = llm.with_structured_output(Plan)
-        msg = [
-            SystemMessage(SYSTEM_INSTR), 
-            HumanMessage(build_user_prompt(columns_markdown, user_prompt))
-        ]
+        msg = [SystemMessage(system_prompt), HumanMessage(user_message)]
         return llm_struct.invoke(msg)
     except Exception as e:
-        # Some models may not support structured output; let caller fall back
         raise LLMError(f"structured_output_failed: {e}")
 
-# ---------- JSON fallback ----------
-def chat_json(columns_markdown: str, user_prompt: str) -> Dict[str, Any]:
-    """If structured output isn't supported by the model, parse JSON manually."""
+def chat_json(system_prompt: str, user_message: str) -> Dict[str, Any]:
+    """If structured output isn't supported, parse JSON manually."""
     llm = _get_llm()
     messages = [
-        SystemMessage(SYSTEM_INSTR + "\nOutput ONLY JSON. No prose."),
-        HumanMessage(build_user_prompt(columns_markdown, user_prompt)),
+        SystemMessage(system_prompt + "\nOutput ONLY JSON. No prose."),
+        HumanMessage(user_message),
     ]
     resp = llm.invoke(messages)
     content = resp.content if isinstance(resp.content, str) else str(resp.content)
@@ -108,16 +110,11 @@ def chat_json(columns_markdown: str, user_prompt: str) -> Dict[str, Any]:
     except Exception as e:
         raise LLMError(f"json_parse_failed: {e}; raw_head={content[:200]}")
 
-def plan_from_llm(columns_markdown: str, user_prompt: str, client_ctx: dict | None) -> Dict[str, Any]:
+def plan_from_llm(columns_markdown: str, user_prompt: str, client_ctx: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Top-level planner used by nlq_llm.handle_llm_nlq."""
+    user_msg = build_user_prompt(columns_markdown, user_prompt, client_ctx)
     try:
-        plan = chat_plan_structured(
-            SYSTEM_PROMPT,
-            build_user_prompt(columns_markdown, user_prompt, client_ctx)
-        )
+        plan = chat_plan_structured(SYSTEM_PROMPT, user_msg)
         return plan.model_dump(by_alias=True)
     except Exception:
-        j = chat_json(
-            SYSTEM_PROMPT,
-            build_user_prompt(columns_markdown, user_prompt, client_ctx)
-        )
-        return j
+        return chat_json(SYSTEM_PROMPT, user_msg)
