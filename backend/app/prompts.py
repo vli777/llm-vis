@@ -41,4 +41,6 @@ TABLES:
 VALIDATION:
 - Output MUST be a single valid JSON object with the fields above.
 - No extra keys beyond what is specified.
+- Return real JSON values only. Never use placeholders like <str>, <bool>, <number>, etc.”
+
 """

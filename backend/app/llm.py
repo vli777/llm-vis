@@ -191,6 +191,19 @@ User prompt:
 Return ONLY JSON as specified by the system prompt. Do not include any explanatory text or formatting fences.
 """
 
+def _validate_ops(ops: list[dict]) -> list[dict]:
+    valid: list[dict] = []
+    for op in ops or []:
+        kind = (op.get("op") or "").strip().lower()
+        if kind == "scatter_data":
+            x = op.get("x"); y = op.get("y")
+            if not isinstance(x, str) or not isinstance(y, str) or not x or not y:
+                # skip invalid scatter requests produced by placeholders
+                continue
+        # add other minimal checks as needed
+        valid.append(op)
+    return valid
+
 
 def _extract_json_block(text: str) -> str:
     if not text:
@@ -272,15 +285,22 @@ def _first_balanced_json(text: str) -> str:
 
 
 _re_trailing_commas = re.compile(r",(\s*[}\]])")
-_re_single_quoted = re.compile(r"'([^'\\]*(?:\\.[^'\\]*)*)'")
-_re_bare_literals = re.compile(r"\b(?:None|True|False)\b")
-
+_re_single_quoted   = re.compile(r"'([^'\\]*(?:\\.[^'\\]*)*)'")
+_re_bare_literals   = re.compile(r"\b(?:None|True|False)\b", re.I)
+_re_angle_tokens    = re.compile(r"<[^>]*>")     # e.g., <str>, <bool>, <field name>
+_re_ellipses        = re.compile(r"\.\.\.")      # literal ...
 
 def _try_repair_json(s: str) -> dict:
-    t = _re_trailing_commas.sub(r"\1", s)
-    t = _re_bare_literals.sub(
-        lambda m: {"None": "null", "True": "true", "False": "false"}[m.group(0)], t
-    )
+    t = s
+    # 1) remove trailing commas
+    t = _re_trailing_commas.sub(r"\1", t)
+    # 2) Python literals -> JSON
+    t = _re_bare_literals.sub(lambda m: {"none":"null","true":"true","false":"false"}[m.group(0).lower()], t)
+    # 3) angle-bracket placeholders -> null
+    t = _re_angle_tokens.sub("null", t)
+    # 4) ellipses -> null
+    t = _re_ellipses.sub("null", t)
+    # 5) single-quoted strings -> double-quoted
     t = _re_single_quoted.sub(lambda m: '"' + m.group(1).replace('"', '\\"') + '"', t)
     return json.loads(t)
 

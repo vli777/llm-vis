@@ -387,10 +387,14 @@ def handle_llm_nlq(
 
     # ----- CREATE path -----
     title = plan.get("title") or "Result"
-    ops = plan.get("operations") or []
-    if not isinstance(ops, list):
-        # be forgiving; some models send a single object
-        ops = [ops] if isinstance(ops, dict) else []
+
+    # normalize + validate operations
+    ops_raw = plan.get("operations") or []
+    if not isinstance(ops_raw, list):
+        ops_raw = [ops_raw] if isinstance(ops_raw, dict) else []
+    ops = _validate_ops(ops_raw)
+
+    spec = plan.get("vega_lite")
 
     # run backend ops to produce the data used by either table or chart
     data = exec_operations(df, ops)
