@@ -1,43 +1,25 @@
-import os
 import json
 import re
 from typing import List, Dict, Any
-from dotenv import load_dotenv
 import pandas as pd
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from .prompts import SYSTEM_PROMPT
 from .models import Plan
+from .llm_loader import get_chat_model, LLMConfigError
 import logging
 
 logger = logging.getLogger("uvicorn.error")
-
-load_dotenv()
-
-# ---------- Config ----------
-DEFAULT_BASE = "https://integrate.api.nvidia.com/v1"
-BASE_URL = os.getenv("LLM_BASE_URL", DEFAULT_BASE).rstrip("/")
-API_KEY = (
-    os.getenv("LLM_API_KEY") or os.getenv("NVIDIA_API_KEY") or os.getenv("NVCF_API_KEY")
-)
-MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 
 
 class LLMError(RuntimeError):
     pass
 
 
-def _get_llm(temperature: float = 0.1) -> ChatNVIDIA:
-    if not API_KEY:
-        raise LLMError(
-            "LLM API key missing. Set LLM_API_KEY (or NVIDIA_API_KEY / NVCF_API_KEY) in backend/.env"
-        )
-    return ChatNVIDIA(
-        model=MODEL,
-        temperature=temperature,
-        base_url=BASE_URL,
-        api_key=API_KEY,
-    )
+def _get_llm(temperature: float = 0.1):
+    try:
+        return get_chat_model(temperature=temperature)
+    except LLMConfigError as exc:
+        raise LLMError(str(exc)) from exc
 
 
 # ---------- helpers for prompt construction ----------
