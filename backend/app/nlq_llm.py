@@ -4,7 +4,7 @@ from typing import Dict, Any, Tuple, List, Optional
 import numpy as np
 import pandas as pd
 
-from .llm import plan_from_llm as lc_plan_from_llm  # LangChain-based planner
+from .llm import plan_from_llm as lc_plan_from_llm, columns_markdown  
 
 
 # ---------- helpers ----------
@@ -41,15 +41,88 @@ def resolve_col(name: Optional[str], df: pd.DataFrame) -> Optional[str]:
     # no luck
     return name if name in df.columns else None
 
+def _pct(n: int, d: int) -> float:
+    return 0.0 if d <= 0 else round(100.0 * n / d, 2)
+
+def _example_values(s: pd.Series, k: int = 3):
+    vals = s.dropna().unique()[:k]
+    # stringify but keep short
+    return [str(v)[:80] for v in vals]
+
+def _topk_counts(s: pd.Series, k: int = 5) -> list[dict]:
+    vc = s.astype("string").fillna("∅").value_counts().head(k)
+    return [{"value": str(i)[:80], "n": int(v)} for i, v in vc.items()]
+
+def dataset_profile(
+    df: pd.DataFrame,
+    *,
+    max_cols: int = 30,
+    include_quants: bool = True,
+) -> Dict[str, Any]:
+    """
+    Compact, LLM-friendly profile of the current table.
+    Keep it small: truncate long strings and cap lists.
+    """
+    nrows = len(df)
+    cols = []
+    for i, c in enumerate(df.columns):
+        if i >= max_cols: 
+            break
+        s = df[c]
+        dtype = str(s.dtype)
+        missing = int(s.isna().sum())
+        unique = int(s.nunique(dropna=True))
+        info: Dict[str, Any] = {
+            "name": c,
+            "dtype": dtype,
+            "missing_pct": _pct(missing, nrows),
+            "unique": unique,
+            "examples": _example_values(s, 3),
+        }
+
+        if pd.api.types.is_numeric_dtype(s):
+            s_num = pd.to_numeric(s, errors="coerce")
+            info["num_stats"] = {
+                "min": float(s_num.min()) if nrows else None,
+                "max": float(s_num.max()) if nrows else None,
+                "mean": float(s_num.mean()) if nrows else None,
+                "std": float(s_num.std()) if nrows else None,
+            }
+            if include_quants:
+                qs = s_num.quantile([0.25, 0.5, 0.75]).to_dict()
+                info["num_stats"].update({f"q{int(q*100)}": float(v) for q, v in qs.items() if not math.isnan(v)})
+        elif pd.api.types.is_datetime64_any_dtype(s):
+            s_dt = pd.to_datetime(s, errors="coerce")
+            info["datetime_range"] = {
+                "min": s_dt.min().isoformat() if s_dt.notna().any() else None,
+                "max": s_dt.max().isoformat() if s_dt.notna().any() else None,
+            }
+        else:
+            info["top_values"] = _topk_counts(s, 5)
+
+        cols.append(info)
+
+    profile: Dict[str, Any] = {"row_count": nrows, "columns": cols}
+
+    # 👇 add 1–3 sample rows (stringified and truncated) for extra context
+    if nrows > 0:
+        sample = (
+            df.sample(min(3, nrows), random_state=0)
+            .astype(str)
+            .applymap(lambda s: s[:80])
+            .to_dict(orient="records")
+        )
+        profile["sample_rows"] = sample
+
+    return profile
 
 # ---------- LLM plan ----------
 
 def plan_from_llm(prompt: str, df: pd.DataFrame, client_ctx: Optional[dict]) -> Dict[str, Any]:
-    """
-    Ask the LLM for a viz action/plan given the dataset schema and optional client context.
-    Returns a dict with keys like: action, type/intent, title, operations, vega_lite, patch, target/targetId.
-    """
-    return lc_plan_from_llm(schema_hint(df), prompt, client_ctx or {})
+    prof = dataset_profile(df, max_cols=30)
+    cols_md = columns_markdown(df)
+    # pass both schema (markdown) and profile (JSON) down
+    return lc_plan_from_llm(cols_md, prompt, client_ctx or {}, profile=prof)
 
 
 # ---------- execution primitives ----------

@@ -1,7 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from app.session_store import get_session, get_session_hashes
+from app.session_store import get_session, get_session_hashes, get_session_meta
 from app.models import NLQRequest, NLQResponse, TableInfo
 from app.nlq_llm import handle_llm_nlq
 import pandas as pd
@@ -44,7 +44,9 @@ def _log_response(ctx: str, payload) -> None:
 async def upload(request: Request, file: UploadFile = File(...)):
     sid = require_session_id(request)
     content = await file.read()
-
+    file_size = len(content)
+    filename = file.filename or "table.csv"
+    ext = (filename.rsplit(".", 1)[1].lower() if "." in filename else "").strip()
     file_hash = _sha256_bytes(content)
     sess_hashes = get_session_hashes(sid)
     if file_hash in sess_hashes:
@@ -65,8 +67,9 @@ async def upload(request: Request, file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=f"Failed to read CSV: {e}")
 
     sess = get_session(sid)
+    meta_store = get_session_meta(sid)
 
-    base = file.filename.rsplit(".", 1)[0] if file.filename else "table"
+    base = filename.rsplit(".", 1)[0] if filename else "table"
     name = base
     i = 1
     while name in sess:
@@ -74,9 +77,32 @@ async def upload(request: Request, file: UploadFile = File(...)):
         name = f"{base}_{i}"
 
     sess[name] = df
+
+    # remember hash -> name
     sess_hashes[file_hash] = name
 
-    resp = {"ok": True, "table": name, "rows": len(df), "columns": list(df.columns)}
+    # NEW: capture metadata
+    created_at = datetime.utcnow().isoformat() + "Z"
+    dtypes = {c: str(df[c].dtype) for c in df.columns}
+    meta_store[name] = {
+        "file_name": filename,
+        "file_ext": ext,
+        "file_size": file_size,
+        "created_at": created_at,
+        "n_rows": int(len(df)),
+        "n_cols": int(len(df.columns)),
+        "columns": list(df.columns),
+        "dtypes": dtypes,
+    }
+
+    resp = {
+        "ok": True,
+        "table": name,
+        "rows": len(df),
+        "columns": list(df.columns),
+        # convenient extras for FE without another call
+        "meta": meta_store[name],
+    }
     _log_response("UPLOAD", resp)
     return resp
 
@@ -84,8 +110,27 @@ async def upload(request: Request, file: UploadFile = File(...)):
 async def tables(request: Request):
     sid = require_session_id(request)
     sess = get_session(sid)
-    info = [TableInfo(name=k, rows=len(v)).model_dump() for k, v in sess.items()]
-    resp = {"tables": info}
+    meta_store = get_session_meta(sid)
+
+    tables_info = []
+    for name, df in sess.items():
+        # compute on the fly if missing (e.g., sample tables)
+        meta = meta_store.get(name) or {
+            "file_name": name,
+            "file_ext": "",
+            "file_size": None,
+            "created_at": None,
+            "n_rows": int(len(df)),
+            "n_cols": int(len(df.columns)),
+            "columns": list(df.columns),
+            "dtypes": {c: str(df[c].dtype) for c in df.columns},
+        }
+        tables_info.append({
+            "name": name,
+            **meta,
+        })
+
+    resp = {"tables": tables_info}
     _log_response("TABLES", resp)
     return resp
 
