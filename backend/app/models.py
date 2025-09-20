@@ -3,7 +3,7 @@ from typing import List, Dict, Any, Optional
 
 class NLQRequest(BaseModel):
     prompt: str
-    context: Optional[Dict[str, Any]] = None
+    clientContext: Optional[Dict[str, Any]] = None
 
 class TableInfo(BaseModel):
     name: str

@@ -35,7 +35,6 @@ async def upload(request: Request, file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read CSV: {e}")
     sess = get_session(sid)
-    # simple unique table name
     base = file.filename.rsplit(".", 1)[0]
     name = base
     i = 1
@@ -52,7 +51,7 @@ async def tables(request: Request):
     info = [TableInfo(name=k, rows=len(v)).model_dump() for k, v in sess.items()]
     return {"tables": info}
 
-@app.post("/nlq", response_model=NLQResponse)
+@app.post("/nlq", response_model=None)
 async def nlq(request: Request, body: NLQRequest):
     sid = require_session_id(request)
     sess = get_session(sid)
@@ -61,4 +60,3 @@ async def nlq(request: Request, body: NLQRequest):
     except Exception as e:
         logger.exception("NLQ failed: %s", e)
         raise HTTPException(status_code=400, detail="Request failed")
-
