@@ -1,23 +1,42 @@
-"use client";
 import { useRef, useState } from "react";
+import { apiPostFormRaw } from "@/lib/api";
 import { Loader2 } from "lucide-react";
-import { apiPostForm } from "../lib/api";
 
 export function UploadZone({ onUploaded }: { onUploaded: () => void }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
   const upload = async (file: File) => {
     const form = new FormData();
     form.append("file", file);
     setBusy(true);
+    setMsg(null);
     try {
-      await apiPostForm("/upload", form);
-      onUploaded();
-    } catch (e) {
+      const { res, data } = await apiPostFormRaw("/upload", form);
+
+      if (res.status === 409 && data?.duplicate) {
+        // Backend matched byte-identical file; reuse existing table
+        setMsg(`Duplicate detected. Reusing table “${data.table}”.`);
+        onUploaded?.(); // refresh list without adding a new entry
+        return;
+      }
+
+      if (!res.ok) {
+        // Show server-provided detail if available
+        const detail = data?.detail || (await res.text());
+        throw new Error(detail || `Upload failed (${res.status})`);
+      }
+
+      setMsg(`Uploaded “${data.table}” (${data.rows} rows).`);
+      onUploaded?.();
+    } catch (e: any) {
       console.error(e);
+      setMsg(e?.message || "Upload failed.");
     } finally {
       setBusy(false);
+      // Allow picking the same file again
+      if (inputRef.current) inputRef.current.value = "";
     }
   };
 
@@ -28,6 +47,7 @@ export function UploadZone({ onUploaded }: { onUploaded: () => void }) {
         <div className="text-sm text-slate-400">
           Drag & drop or choose a file. Stored in memory for this session.
         </div>
+        {msg && <div className="mt-1 text-xs text-slate-300">{msg}</div>}
       </div>
 
       <div>
