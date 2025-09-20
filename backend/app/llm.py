@@ -30,6 +30,82 @@ def _get_llm(temperature: float = 0.2) -> ChatNVIDIA:
     )
 
 # ---------- helpers for prompt construction ----------
+# llm.py
+from typing import Any, Dict, List
+from langchain_core.messages import AIMessage
+
+def _as_text_from_content(content: Any) -> str:
+    """Normalize LC content (str | list[chunk] | dict)."""
+    if content is None:
+        return ""
+    if isinstance(content, AIMessage):
+        return _as_text_from_content(content.content)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for p in content:
+            if isinstance(p, str):
+                parts.append(p)
+            elif isinstance(p, dict):
+                t = p.get("text")
+                if isinstance(t, str):
+                    parts.append(t)
+                else:
+                    parts.append(str(p))
+            else:
+                parts.append(str(p))
+        return "".join(parts)
+    if isinstance(content, dict):
+        # common shapes
+        if "text" in content and isinstance(content["text"], str):
+            return content["text"]
+        if "content" in content and isinstance(content["content"], str):
+            return content["content"]
+        return str(content)
+    return str(content)
+
+def _as_text_from_response(resp: Any) -> str:
+    """
+    Try multiple places providers may stash text:
+      - resp.content (usual)
+      - resp.additional_kwargs.reasoning_content (NVIDIA)
+      - resp.additional_kwargs.content
+      - resp.message.content (rare dict shape)
+    """
+    # 1) normal path
+    text = _as_text_from_content(getattr(resp, "content", None))
+    if text:
+        return text
+
+    # 2) provider-specific extras
+    extras = getattr(resp, "additional_kwargs", {}) or {}
+    if isinstance(extras, dict):
+        rc = extras.get("reasoning_content")
+        if isinstance(rc, str) and rc.strip():
+            return rc
+        c2 = extras.get("content")
+        if isinstance(c2, str) and c2.strip():
+            return c2
+        msg = extras.get("message")
+        if isinstance(msg, dict):
+            mc = msg.get("content")
+            if isinstance(mc, str) and mc.strip():
+                return mc
+
+    # 3) raw dict
+    if isinstance(resp, dict):
+        c = resp.get("content")
+        if isinstance(c, str) and c.strip():
+            return c
+        extras = resp.get("additional_kwargs") or {}
+        if isinstance(extras, dict):
+            rc = extras.get("reasoning_content")
+            if isinstance(rc, str) and rc.strip():
+                return rc
+
+    return ""
+
 def columns_markdown(df: pd.DataFrame) -> str:
     return "\n".join(f"- {c} ({str(df[c].dtype)})" for c in df.columns)
 
@@ -106,7 +182,7 @@ def _as_text_from_content(content: Any) -> str:
 def _extract_json_block(text: str) -> str:
     if not text:
         raise ValueError("empty LLM response")
-    # strip common fences anywhere (leading or trailing)
+    # strip common fences
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE | re.MULTILINE)
     # quick path
     try:
@@ -115,7 +191,7 @@ def _extract_json_block(text: str) -> str:
     except Exception:
         pass
 
-    # find first brace/bracket, then balance
+    # scan for the first balanced JSON object/array
     start = None
     depth = 0
     for i, ch in enumerate(text):
@@ -133,13 +209,11 @@ def _extract_json_block(text: str) -> str:
             depth -= 1
             if depth == 0:
                 candidate = text[start:j + 1]
-                # ensure this parses
                 json.loads(candidate)
                 return candidate
 
-    # include a teaser to help debugging
-    teaser = text[:400].replace("\n", "\\n")
-    raise ValueError(f"unterminated JSON (first 400 chars): {teaser}")
+    teaser = text[start:start+400].replace("\n", "\\n")
+    raise ValueError(f"unterminated JSON (teaser): {teaser}")
 
 def chat_plan_structured(system_prompt: str, user_message: str) -> Plan:
     llm = _get_llm()
@@ -148,16 +222,16 @@ def chat_plan_structured(system_prompt: str, user_message: str) -> Plan:
         msg = [SystemMessage(system_prompt), HumanMessage(user_message)]
         out = llm_struct.invoke(msg)
         if out is None:
-            # Some providers return AIMessage with empty structured parse; try direct text extraction
             raise LLMError("structured_output_failed: empty result")
-        # out may already be a pydantic BaseModel Plan
         if isinstance(out, Plan):
             return out
-        # or a dict compatible with Plan
         if isinstance(out, dict):
             return Plan(**out)
-        # or an AIMessage / other; last chance: parse text and validate
-        text = _as_text_from_content(getattr(out, "content", out))
+
+        # Last chance: try to parse text out of the raw message
+        text = _as_text_from_response(out) or _as_text_from_content(getattr(out, "content", None))
+        if not text:
+            raise LLMError("structured_output_failed: no parsed text")
         block = _extract_json_block(text)
         return Plan(**json.loads(block))
     except Exception as e:
@@ -177,34 +251,25 @@ def chat_json(system_prompt: str, user_message: str) -> Dict[str, Any]:
                 resp = llm_json.invoke(messages)
             else:
                 resp = llm.invoke(messages)
-
-            # Normalize to text robustly
-            content = getattr(resp, "content", resp)
-            text = _as_text_from_content(content)
+            text = _as_text_from_response(resp)
             if not text:
-                # try additional kwargs if provider stashes raw there
+                # fall back to content normalization (older providers)
+                text = _as_text_from_content(getattr(resp, "content", None))
+            if not text:
                 raw = getattr(resp, "additional_kwargs", None)
                 raise LLMError(f"no_content: additional={raw}")
             return text
         except Exception as ex:
             raise LLMError(f"invoke_failed: {ex}")
 
-    # try once normally
     content = invoke_once(tighter=False)
     try:
         block = _extract_json_block(content)
         return json.loads(block)
-    except Exception as e1:
-        # retry once with JSON-only format
+    except Exception:
         content2 = invoke_once(tighter=True)
-        try:
-            block2 = _extract_json_block(content2)
-            return json.loads(block2)
-        except Exception as e2:
-            # include teasers of raw content for debugging
-            teaser1 = (content or "")[:400].replace("\n", "\\n")
-            teaser2 = (content2 or "")[:400].replace("\n", "\\n")
-            raise LLMError(f"fallback failed: {e2}; first_try_teaser={teaser1}; second_try_teaser={teaser2}")
+        block2 = _extract_json_block(content2)  # let this raise with teaser
+        return json.loads(block2)
 
 def plan_from_llm(columns_markdown: str, user_prompt: str, client_ctx: Dict[str, Any] | None, *, profile: Dict[str, Any] | None = None) -> Dict[str, Any]:
     user_msg = build_user_prompt(columns_markdown, user_prompt, client_ctx, profile=profile)
