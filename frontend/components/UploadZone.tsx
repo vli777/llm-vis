@@ -21,34 +21,25 @@ export function UploadZone({ onUploaded }: { onUploaded: () => void }) {
   };
 
   return (
-    <div
-      style={{
-        padding: 16,
-        border: "1px dashed #374151",
-        borderRadius: 12,
-        background: "#0f172a",
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        gap: 12,
-      }}
-    >
+    <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
       <div>
-        <div style={{ fontWeight: 600 }}>Upload CSV</div>
-        <div style={{ opacity: 0.8 }}>
-          Drag & drop or choose a file. Stored in memory for this session.
-        </div>
+        <div className="font-medium">Upload CSV</div>
+        <div className="text-sm text-slate-400">Drag & drop or choose a file. Stored in memory for this session.</div>
       </div>
-      <div style={{ display: "flex", gap: 8 }}>
+      <div>
         <input
           ref={inputRef}
           type="file"
           accept=".csv,text/csv"
-          style={{ display: "none" }}
+          className="hidden"
           onChange={(e) => e.target.files && upload(e.target.files[0])}
         />
-        <button onClick={() => inputRef.current?.click()} disabled={busy}>
-          {busy ? "Uploading..." : "Choose file"}
+        <button
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
+        >
+          {busy ? "Uploading…" : "Choose file"}
         </button>
       </div>
     </div>

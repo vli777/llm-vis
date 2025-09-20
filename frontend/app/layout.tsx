@@ -1,10 +1,11 @@
+import "./globals.css";
+
 export const metadata = { title: "AI Data Vis", description: "Turn prompts into charts" };
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: "system-ui, sans-serif", margin: 0, background: "#0b0c10", color: "#e5e7eb"}}>
-        {children}
-      </body>
+      <body className="bg-slate-950 text-slate-200 antialiased">{children}</body>
     </html>
   );
 }

@@ -1,0 +1,4 @@
+@import "tailwindcss";
+
+/* optional: nicer focus ring on dark bg */
+:root { color-scheme: dark; }
