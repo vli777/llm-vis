@@ -9,6 +9,17 @@ from .llm import plan_from_llm as lc_plan_from_llm, columns_markdown
 
 
 # ---------- helpers ----------
+def df_json_safe(df: pd.DataFrame) -> pd.DataFrame:
+    """Replace ±inf -> NaN, then NaN -> None so Starlette JSONResponse can serialize."""
+    if df.empty:
+        return df
+    tmp = df.replace([np.inf, -np.inf], np.nan)
+    # ensure we can hold None
+    tmp = tmp.astype(object)
+    return tmp.where(pd.notna(tmp), None)
+
+def df_to_records_safe(df: pd.DataFrame) -> list[dict]:
+    return df_json_safe(df).to_dict(orient="records")
 
 def pick_table(tables: Dict[str, pd.DataFrame]) -> Tuple[str, pd.DataFrame]:
     """Choose a table to operate on. Currently: largest by row-count."""
@@ -162,6 +173,11 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
     """
     Execute a small DSL of operations safely in pandas.
     Supported ops: value_counts, explode_counts, scatter_data, corr_pair
+
+    Additions:
+    - value_counts/explode_counts: optional `limit` (int) to cap top-N.
+    - scatter_data: optional `log` (bool) to log-transform x and y; drops <= 0 before log.
+    - corr_pair: stores JSON-safe floats in result.attrs (None when not finite).
     """
     result = df.copy()
 
@@ -173,13 +189,16 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             if not col or col not in result.columns:
                 raise ValueError(f"Column not found for value_counts: {op.get('col')}")
             key, ncol = (op.get("as") or [col, "n"])
+            limit = op.get("limit")
             series = result[col].astype("string").fillna("∅")
-            out = series.value_counts(dropna=False).reset_index()
+            out = series.value_counts(dropna=False)
+            if isinstance(limit, int) and limit > 0:
+                out = out.head(limit)
+            out = out.reset_index()
             out.columns = [key, ncol]
             result = out
 
         elif kind == "explode_counts":
-            # If LLM forgot the column, heuristically try investor-like columns
             col = resolve_col(op.get("col"), result)
             if not col or col not in result.columns:
                 # heuristic fallback for common multi-value fields
@@ -193,16 +212,19 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
 
             sep = op.get("sep") or r"[;,/|]"
             key, ncol = (op.get("as") or ["value", "n"])
+            limit = op.get("limit")
 
             s = result[col].fillna("").astype(str).str.split(sep)
             exploded = result.assign(_value=s).explode("_value")
             cleaned = exploded["_value"].astype(str).str.strip()
-            out = (
+            counts = (
                 cleaned[cleaned.ne("")]
                 .str.replace(r"\s+", " ", regex=True)
                 .value_counts()
-                .reset_index()
             )
+            if isinstance(limit, int) and limit > 0:
+                counts = counts.head(limit)
+            out = counts.reset_index()
             out.columns = [key, ncol]
             result = out
 
@@ -211,7 +233,17 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             y = resolve_col(op.get("y"), result)
             extras = [resolve_col(e, result) for e in (op.get("extras") or [])]
             cols = _ensure_cols(result, [x, y] + [e for e in extras if e])
+
+            # numeric coercion for x,y; extras are passed through
             _coerce_numeric_inplace(result, [x, y])
+
+            # Optional log transform
+            if op.get("log"):
+                # drop non-positive before log
+                result = result[(pd.to_numeric(result[x], errors="coerce") > 0) & (pd.to_numeric(result[y], errors="coerce") > 0)]
+                result[x] = np.log(pd.to_numeric(result[x], errors="coerce"))
+                result[y] = np.log(pd.to_numeric(result[y], errors="coerce"))
+
             result = result[cols].replace([np.inf, -np.inf], np.nan).dropna()
 
         elif kind == "corr_pair":
@@ -222,11 +254,13 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             _coerce_numeric_inplace(result, [x, y])
             sub = result[[x, y]].replace([np.inf, -np.inf], np.nan).dropna()
             if len(sub) == 0:
-                result.attrs["pearson"] = float("nan")
-                result.attrs["spearman"] = float("nan")
+                result.attrs["pearson"] = None
+                result.attrs["spearman"] = None
             else:
-                result.attrs["pearson"] = float(sub[x].corr(sub[y], method="pearson"))
-                result.attrs["spearman"] = float(sub[x].corr(sub[y], method="spearman"))
+                p = sub[x].corr(sub[y], method="pearson")
+                s = sub[x].corr(sub[y], method="spearman")
+                result.attrs["pearson"]  = float(p) if (p is not None and math.isfinite(p)) else None
+                result.attrs["spearman"] = float(s) if (s is not None and math.isfinite(s)) else None
 
         else:
             raise ValueError(f"Unsupported op: {kind}")
@@ -234,17 +268,16 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
     # Safety: cap huge payloads sent back to the FE for speed
     if len(result) > 5000:
         result = result.head(5000).copy()
-    return result
 
+    return result
 
 # ---------- spec attachment ----------
 
 def attach_values_to_spec(spec: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
     spec = dict(spec or {})
     spec["$schema"] = spec.get("$schema") or "https://vega.github.io/schema/vega-lite/v5.json"
-    spec["data"] = {"values": df.to_dict(orient="records")}
+    spec["data"] = {"values": df_to_records_safe(df)}  # <-- SAFE
     return spec
-
 
 # ---------- main entry ----------
 
@@ -285,7 +318,10 @@ def handle_llm_nlq(prompt: str, tables: Dict[str, pd.DataFrame], client_ctx: Opt
             "type": "table",
             "action": "create",
             "title": title,
-            "table": {"columns": list(data.columns), "rows": data.to_dict(orient="records")},
+            "table": {
+                "columns": list(data.columns),
+                "rows": df_to_records_safe(data),  # <-- SAFE
+            },
         }
 
     return {"type": "chart", "action": "create", "title": title, "spec": attach_values_to_spec(spec, data)}
