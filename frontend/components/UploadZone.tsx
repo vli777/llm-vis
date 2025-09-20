@@ -2,7 +2,11 @@ import { useRef, useState } from "react";
 import { apiPostFormRaw } from "@/lib/api";
 import { Loader2 } from "lucide-react";
 
-export function UploadZone({ onUploaded }: { onUploaded: () => void }) {
+export function UploadZone({
+  onUploaded,
+}: {
+  onUploaded: () => void | Promise<void>;
+}) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -18,7 +22,13 @@ export function UploadZone({ onUploaded }: { onUploaded: () => void }) {
       if (res.status === 409 && data?.duplicate) {
         // Backend matched byte-identical file; reuse existing table
         setMsg(`Duplicate detected. Reusing table “${data.table}”.`);
-        onUploaded?.(); // refresh list without adding a new entry
+        const maybePromise = onUploaded?.();
+        if (
+          maybePromise &&
+          typeof (maybePromise as PromiseLike<void>).then === "function"
+        ) {
+          maybePromise.catch(console.error);
+        }
         return;
       }
 
@@ -28,8 +38,18 @@ export function UploadZone({ onUploaded }: { onUploaded: () => void }) {
         throw new Error(detail || `Upload failed (${res.status})`);
       }
 
-      setMsg(`Uploaded “${data.table}” (${data.rows} rows).`);
-      onUploaded?.();
+      setMsg(
+        data?.table
+          ? `Uploaded “${data.table}” (${data.rows ?? "?"} rows).`
+          : "Upload complete."
+      );
+      const maybePromise = onUploaded?.();
+      if (
+        maybePromise &&
+        typeof (maybePromise as PromiseLike<void>).then === "function"
+      ) {
+        maybePromise.catch(console.error);
+      }
     } catch (e: any) {
       console.error(e);
       setMsg(e?.message || "Upload failed.");

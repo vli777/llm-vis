@@ -23,17 +23,20 @@ export default function Page() {
   const [pending, setPending] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const latestReq = useRef<number>(0);
+  const tablesReq = useRef<number>(0);
 
   const refreshTables = async () => {
+    const reqId = Date.now();
+    tablesReq.current = reqId;
     try {
       const r = await apiGetJSON<{ tables: any[] }>("/tables");
       const next = r.tables || [];
+      if (tablesReq.current !== reqId) return;
       setTables(next);
-      if (next.length === 0) {
-        setViz([]);
-      }
+      if (next.length === 0) setViz([]);
     } catch (e) {
       console.error(e);
+      if (tablesReq.current !== reqId) return;
       setTables([]);
       setViz([]);
     }
