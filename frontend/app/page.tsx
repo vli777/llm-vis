@@ -98,6 +98,7 @@ export default function Page() {
 
       // --- create actions (default path) ---
       if (res.type === "chart") {
+        console.log("Chart response", res);
         setViz((v) => [
           {
             id: crypto.randomUUID(),
@@ -108,6 +109,7 @@ export default function Page() {
           ...v,
         ]);
       } else if (res.type === "table") {
+        console.log("Table response", res);
         setViz((v) => [
           {
             id: crypto.randomUUID(),
