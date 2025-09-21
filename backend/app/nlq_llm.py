@@ -374,29 +374,28 @@ def _choose_categorical_column(
     categorical_info: List[Dict[str, Any]],
 ) -> Optional[str]:
     tokens = set(prompt_tokens)
-    filtered = [info for info in categorical_info if info.get("ratio", 1.0) <= 0.9]
-    if not filtered:
-        filtered = categorical_info
-
     best: Optional[str] = None
-    best_score: Tuple[int, int, float, int] = (-1, -1, float("-inf"), -1)
+    best_score: Tuple[int, int, float, float, int] = (-1, -1, float("-inf"), float("-inf"), -1)
 
-    for info in filtered:
+    for info in categorical_info:
         overlap = len(tokens & info.get("tokens", set()))
         ratio = info.get("ratio", 0.0)
         ratio_score = -abs(ratio - 0.2)
+        rarity_score = -ratio  # prefer lower ratio (more repetitions)
+        unique = info.get("unique", 0)
         score = (
             1 if overlap > 0 else 0,
             overlap,
             ratio_score,
-            info.get("unique", 0),
+            rarity_score,
+            unique,
         )
         if best is None or score > best_score:
             best = info["name"]
             best_score = score
 
-    if best is None and filtered:
-        best = max(filtered, key=lambda i: i.get("unique", 0))["name"]
+    if best is None and categorical_info:
+        best = max(categorical_info, key=lambda i: i.get("unique", 0))["name"]
     return best
 
 
@@ -1047,12 +1046,21 @@ def handle_llm_nlq(
     table_requested = bool(tokens & table_tokens)
     chart_requested = bool(tokens & chart_tokens)
 
-    if "not table" in prompt_lc or "no table" in prompt_lc:
+    if "not" in tokens and "table" in tokens:
         table_requested = False
 
     if auto_table and not chart_requested:
         table_requested = True
-    if table_requested:
+        if not auto_ops:
+            inferred_ops, _ = _auto_operations(prompt_tokens, categorical_info)
+            if inferred_ops:
+                ops = _validate_ops(inferred_ops)
+
+    if table_requested and not chart_requested:
+        if not auto_ops:
+            inferred_ops, _ = _auto_operations(prompt_tokens, categorical_info)
+            if inferred_ops:
+                ops = _validate_ops(inferred_ops)
         spec = None
         vtype = "table"
 
