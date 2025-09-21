@@ -29,7 +29,7 @@ def _env(key: str, default: Optional[str] = None) -> Optional[str]:
 
 
 def _resolve_provider() -> str:
-    return (_env("LLM_PROVIDER", "nvidia") or "nvidia").lower()
+    return (_env("LLM_PROVIDER", "groq") or "groq").lower()
 
 
 def _resolve_model(default: str) -> str:
@@ -40,6 +40,29 @@ def create_chat_model(temperature: float = 0.1) -> BaseChatModel:
     """Return a LangChain chat model for the configured provider."""
 
     provider = _resolve_provider()
+
+    if provider in {"groq"}:
+        try:
+            from langchain_groq import ChatGroq  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise LLMConfigError(
+                "Groq provider selected but langchain-groq is not installed. "
+                "Run `pip install langchain-groq` or switch LLM_PROVIDER."
+            ) from exc
+
+        api_key = _env("LLM_API_KEY") or _env("GROQ_API_KEY")
+        if not api_key:
+            raise LLMConfigError(
+                "Groq provider selected but no API key found. "
+                "Set LLM_API_KEY or GROQ_API_KEY."
+            )
+
+        model = _resolve_model("llama-3.1-8b-instant")
+        return ChatGroq(
+            model=model,
+            temperature=temperature,
+            groq_api_key=api_key,
+        )
 
     if provider in {"nvidia", "nv", "nvcf"}:
         from langchain_nvidia_ai_endpoints import ChatNVIDIA  # local import to avoid hard dep when unused
@@ -94,7 +117,7 @@ def create_chat_model(temperature: float = 0.1) -> BaseChatModel:
         return ChatOpenAI(**kwargs)
 
     raise LLMConfigError(
-        f"Unsupported LLM_PROVIDER '{provider}'. Expected 'nvidia' or 'openai'."
+        f"Unsupported LLM_PROVIDER '{provider}'. Expected 'groq', 'nvidia' or 'openai'."
     )
 
 
