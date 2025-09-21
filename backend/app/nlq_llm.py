@@ -1,15 +1,22 @@
 import re
+import copy
 from typing import Dict, Any, Tuple, List, Optional
 
 import numpy as np
 import pandas as pd
 import math
+import logging
+from datetime import datetime
 
 from .llm import (
     plan_from_llm as lc_plan_from_llm,
     columns_markdown,
     _coerce_plan_object,
+    _validate_ops,
 )
+
+
+logger = logging.getLogger("uvicorn.error")
 
 
 # ---------- helpers ----------
@@ -27,12 +34,43 @@ def df_to_records_safe(df: pd.DataFrame) -> list[dict]:
     return df_json_safe(df).to_dict(orient="records")
 
 
-def pick_table(tables: Dict[str, pd.DataFrame]) -> Tuple[str, pd.DataFrame]:
-    """Choose a table to operate on. Currently: largest by row-count."""
+def _parse_created_at(meta: dict) -> float:
+    created = meta.get("created_at") if isinstance(meta, dict) else None
+    if isinstance(created, str) and created:
+        try:
+            return datetime.fromisoformat(created.replace("Z", "")).timestamp()
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def pick_table(
+    tables: Dict[str, pd.DataFrame],
+    meta_store: Optional[Dict[str, dict]] = None,
+) -> Tuple[str, pd.DataFrame]:
+    """Choose the most recent table based on metadata (falls back to insertion order)."""
     if not tables:
         raise ValueError("No tables uploaded.")
-    name = max(tables, key=lambda k: len(tables[k]))
-    return name, tables[name]
+
+    if meta_store:
+        def sort_key(name: str) -> Tuple[float, int]:
+            meta = meta_store.get(name) or {}
+            ts = _parse_created_at(meta)
+            # preserve insertion order as secondary key
+            try:
+                order_idx = list(tables.keys()).index(name)
+            except ValueError:
+                order_idx = -1
+            return (ts, order_idx)
+
+        latest_name = max(tables.keys(), key=sort_key)
+        return latest_name, tables[latest_name]
+
+    try:
+        latest_name = next(reversed(tables.keys()))
+    except StopIteration:  # pragma: no cover - defensive
+        raise ValueError("No tables uploaded.")
+    return latest_name, tables[latest_name]
 
 
 def schema_hint(df: pd.DataFrame) -> str:
@@ -85,8 +123,6 @@ def _fix_field(value, df):
 
 
 def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
-    import copy
-
     s = copy.deepcopy(spec)
 
     def walk(x):
@@ -94,12 +130,31 @@ def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
             # common Vega-Lite places
             if "field" in x:
                 x["field"] = _fix_field(x["field"], df)
+            if "aggregate" in x and isinstance(x["aggregate"], dict):
+                agg_obj = x["aggregate"]
+                op = None
+                if isinstance(agg_obj, dict):
+                    op = (
+                        agg_obj.get("op")
+                        or agg_obj.get("aggregate")
+                        or agg_obj.get("name")
+                    )
+                if op:
+                    x["aggregate"] = op
+                else:
+                    x.pop("aggregate", None)
             if "groupby" in x and isinstance(x["groupby"], list):
                 x["groupby"] = [_fix_field(v, df) for v in x["groupby"]]
             if "fields" in x and isinstance(x["fields"], list):
                 x["fields"] = [_fix_field(v, df) for v in x["fields"]]
             if "sort" in x and isinstance(x["sort"], dict) and "field" in x["sort"]:
                 x["sort"]["field"] = _fix_field(x["sort"]["field"], df)
+            if "aggregate" in x and isinstance(x["aggregate"], str):
+                # scrub stray aggregate on top-level encode objects like transform aggregate
+                if x["aggregate"].strip() == "":
+                    x.pop("aggregate", None)
+            if "transform" in x and isinstance(x["transform"], list):
+                x["transform"] = [walk(v) for v in x["transform"]]
             for k, v in x.items():
                 x[k] = walk(v)
         elif isinstance(x, list):
@@ -107,6 +162,98 @@ def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
         return x
 
     return walk(s)
+
+
+def _normalize_pie_chart(spec: dict, data: pd.DataFrame) -> dict:
+    mark = spec.get("mark")
+
+    def _mark_type(m) -> str:
+        if isinstance(m, str):
+            return m.lower()
+        if isinstance(m, dict):
+            return (m.get("type") or "").lower()
+        return ""
+
+    mtype = _mark_type(mark)
+    if mtype not in {"pie", "donut", "doughnut", "arc"}:
+        return spec
+
+    # Normalize mark -> arc with filled default
+    if isinstance(mark, dict):
+        normalized_mark = {**mark, "type": "arc", "filled": True}
+    else:
+        normalized_mark = {"type": "arc", "filled": True}
+    spec["mark"] = normalized_mark
+
+    enc = spec.setdefault("encoding", {})
+
+    # Derive category field from color/x
+    category_field = None
+    if isinstance(enc.get("color"), dict):
+        category_field = enc["color"].get("field")
+    if not category_field and isinstance(enc.get("x"), dict):
+        category_field = enc["x"].get("field")
+
+    if category_field and "color" not in enc:
+        enc["color"] = {"field": category_field, "type": enc.get("x", {}).get("type", "nominal")}
+
+    # Ensure theta channel exists
+    theta = enc.get("theta") if isinstance(enc.get("theta"), dict) else None
+
+    if not theta or not theta.get("field"):
+        numeric_cols = [c for c in data.columns if pd.api.types.is_numeric_dtype(data[c])]
+        preferred = None
+        for name in [
+            "count",
+            "n",
+            "value",
+            "total",
+            "sum",
+        ]:
+            if name in data.columns and name in numeric_cols:
+                preferred = name
+                break
+        if not preferred and numeric_cols:
+            preferred = numeric_cols[0]
+
+        if preferred:
+            enc["theta"] = {"field": preferred, "type": "quantitative"}
+        else:
+            enc["theta"] = {"aggregate": "count"}
+
+    # Preserve category info in tooltip when removing x
+    if category_field:
+        tooltips = enc.setdefault("tooltip", [])
+        if isinstance(tooltips, dict):
+            tooltips = [tooltips]
+        if isinstance(tooltips, list):
+            existing = {t.get("field") for t in tooltips if isinstance(t, dict) and t.get("field")}
+            if category_field not in existing:
+                tooltips.append({"field": category_field})
+            enc["tooltip"] = tooltips
+
+    enc.pop("x", None)
+    enc.pop("y", None)
+
+    # Drop transforms that only attempted aggregate counts (theta handles it)
+    transforms = spec.get("transform")
+    if isinstance(transforms, list):
+        cleaned: list[dict] = []
+        for t in transforms:
+            if not isinstance(t, dict):
+                continue
+            if not t:
+                continue
+            agg = t.get("aggregate")
+            if isinstance(agg, str) and agg.strip().lower() in {"count", "sum", "mean"}:
+                continue
+            cleaned.append(t)
+        if cleaned:
+            spec["transform"] = cleaned
+        else:
+            spec.pop("transform", None)
+
+    return spec
 
 
 PROFILE_MAX_ROWS = 2000
@@ -255,6 +402,25 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             key, ncol = op.get("as") or [col, "n"]
             limit = op.get("limit")
             series = result[col].astype("string").fillna("∅")
+
+            sep = op.get("sep")
+            if not sep:
+                sample = series.head(100)
+                if sample.str.contains(r"[;,/|]").mean() > 0.2:
+                    sep = r"[;,/|]"
+
+            if sep:
+                splitted = (
+                    series.fillna("")
+                    .astype(str)
+                    .str.split(sep)
+                    .explode()
+                    .astype(str)
+                    .str.strip()
+                    .str.replace(r"\s+", " ", regex=True)
+                )
+                series = splitted[splitted.ne("")]
+
             out = series.value_counts(dropna=False)
             if isinstance(limit, int) and limit > 0:
                 out = out.head(limit)
@@ -352,6 +518,38 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
 # ---------- spec attachment ----------
 
 
+def _sanitize_for_spec(df: pd.DataFrame, spec: Dict[str, Any]) -> pd.DataFrame:
+    if df.empty or not isinstance(spec, dict):
+        return df
+
+    enc = spec.get("encoding")
+    if not isinstance(enc, dict):
+        return df
+
+    out = df.copy()
+    numeric_fields: List[str] = []
+
+    for channel in ("x", "x2", "y", "y2", "theta", "size"):
+        node = enc.get(channel)
+        if not isinstance(node, dict):
+            continue
+        field = node.get("field")
+        if not isinstance(field, str) or field not in out.columns:
+            continue
+        kind = (node.get("type") or "").lower()
+        if kind == "quantitative":
+            out[field] = pd.to_numeric(out[field], errors="coerce")
+            numeric_fields.append(field)
+
+    if numeric_fields:
+        out = out.replace([np.inf, -np.inf], np.nan)
+        out = out.dropna(subset=numeric_fields)
+        if out.empty:
+            return df
+
+    return out
+
+
 def attach_values_to_spec(spec: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
     spec = dict(spec or {})
     spec["$schema"] = (
@@ -370,9 +568,17 @@ def handle_llm_nlq(
     prompt: str,
     tables: Dict[str, pd.DataFrame],
     client_ctx: Optional[dict] = None,
+    *,
+    meta_store: Optional[Dict[str, dict]] = None,
 ) -> Dict[str, Any]:
     # pick a table
-    _, df = pick_table(tables)
+    if meta_store:
+        # keep meta store in sync with live tables to avoid stale entries
+        stale = [name for name in meta_store.keys() if name not in tables]
+        for name in stale:
+            meta_store.pop(name, None)
+
+    table_name, df = pick_table(tables, meta_store)
 
     # plan (coerce list/str -> dict)
     plan = plan_from_llm(prompt, df, client_ctx)
@@ -433,14 +639,24 @@ def handle_llm_nlq(
 
     # fix field casing/spelling to match dataframe columns
     spec = _canon_fields_in_spec(spec, data)
+    spec = _normalize_pie_chart(spec, data)
+
+    if logger.isEnabledFor(logging.INFO):
+        try:
+            spec_for_log = {k: v for k, v in spec.items() if k != "data"}
+            logger.info("VEGA SPEC (from LLM): %s", json.dumps(spec_for_log, indent=2))
+        except Exception:
+            logger.info("VEGA SPEC (from LLM): %s", spec)
 
     # the backend injects data; remove any model-provided data block to avoid conflicts
     if "data" in spec:
         spec.pop("data", None)
 
+    clean_data = _sanitize_for_spec(data, spec)
+
     return {
         "type": "chart",
         "action": "create",
         "title": title,
-        "spec": attach_values_to_spec(spec, data),
+        "spec": attach_values_to_spec(spec, clean_data),
     }

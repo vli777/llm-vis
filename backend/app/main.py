@@ -193,9 +193,15 @@ async def tables(request: Request):
 async def nlq(request: Request, body: NLQRequest):
     sid = require_session_id(request)
     sess = get_session(sid)
+    meta_store = get_session_meta(sid)
     t0 = time.perf_counter()
     try:
-        result = handle_llm_nlq(body.prompt, sess, client_ctx=body.clientContext or {})
+        result = handle_llm_nlq(
+            body.prompt,
+            sess,
+            client_ctx=body.clientContext or {},
+            meta_store=meta_store,
+        )
         dt_ms = int((time.perf_counter() - t0) * 1000)
 
         # Log prompt + result (pretty JSON where possible)
