@@ -660,11 +660,20 @@ def _enforce_prompt_preferences(
             if not isinstance(t, dict):
                 cleaned.append(t)
                 continue
+            calc = t.get("calculate")
+            if isinstance(calc, str):
+                expr = calc.strip().lower()
+                if ":" in expr and "datum" not in expr and "parse" in expr:
+                    continue
             filt = t.get("filter")
             if isinstance(filt, dict):
                 field = filt.get("field")
-                if isinstance(field, str) and field not in df.columns:
-                    continue
+                if isinstance(field, str):
+                    if field not in df.columns:
+                        continue
+                    if filt.get("operator") == "not null":
+                        cleaned.append({"filter": f"datum['{field}'] != null"})
+                        continue
             cleaned.append(t)
         if cleaned:
             spec["transform"] = cleaned
