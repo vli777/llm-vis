@@ -1043,6 +1043,9 @@ def handle_llm_nlq(
     table_requested = bool(tokens & table_tokens)
     chart_requested = bool(tokens & chart_tokens)
 
+    if "not table" in prompt_lc or "no table" in prompt_lc:
+        table_requested = False
+
     if auto_table and not chart_requested:
         table_requested = True
     if table_requested:
