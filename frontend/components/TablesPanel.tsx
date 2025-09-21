@@ -27,7 +27,7 @@ function TableListItem({ t }: { t: TableInfo }) {
   const colsTxt = (t.columns || []).join(", ");
   const dtypeTxt = t.dtypes
     ? Object.entries(t.dtypes)
-        .map(([k, v]) => `${k}:${v}`)
+        .map(([k, v]) => `${k}: ${v}`)
         .join(", ")
     : "";
 

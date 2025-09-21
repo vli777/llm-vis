@@ -23,13 +23,22 @@ export default function Page() {
   const [pending, setPending] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const latestReq = useRef<number>(0);
+  const tablesReq = useRef<number>(0);
 
   const refreshTables = async () => {
+    const reqId = Date.now();
+    tablesReq.current = reqId;
     try {
       const r = await apiGetJSON<{ tables: any[] }>("/tables");
-      setTables(r.tables || []);
+      const next = r.tables || [];
+      if (tablesReq.current !== reqId) return;
+      setTables(next);
+      if (next.length === 0) setViz([]);
     } catch (e) {
       console.error(e);
+      if (tablesReq.current !== reqId) return;
+      setTables([]);
+      setViz([]);
     }
   };
 
@@ -89,6 +98,7 @@ export default function Page() {
 
       // --- create actions (default path) ---
       if (res.type === "chart") {
+        console.log("Chart response", res);
         setViz((v) => [
           {
             id: crypto.randomUUID(),
@@ -99,6 +109,7 @@ export default function Page() {
           ...v,
         ]);
       } else if (res.type === "table") {
+        console.log("Table response", res);
         setViz((v) => [
           {
             id: crypto.randomUUID(),
@@ -167,47 +178,64 @@ export default function Page() {
               padding: 16,
               borderRadius: 12,
               position: "relative",
+              height: "clamp(320px, 60vh, 720px)",
+              overflow: "hidden",
+              display: "flex",
+              flexDirection: "column",
             }}
           >
             {v.title && <h3 style={{ marginTop: 0 }}>{v.title}</h3>}
-            {v.type === "chart" && v.spec && <VegaLiteChart spec={v.spec} />}
+            {v.type === "chart" && v.spec && (
+              <div style={{ flex: 1, marginTop: v.title ? 8 : 0 }}>
+                <VegaLiteChart spec={v.spec} />
+              </div>
+            )}
             {v.type === "table" && v.table && (
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                  <thead>
-                    <tr>
-                      {v.table.columns.map((c) => (
-                        <th
-                          key={c}
-                          style={{
-                            textAlign: "left",
-                            borderBottom: "1px solid #374151",
-                            padding: 8,
-                          }}
-                        >
-                          {c}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {v.table.rows.map((row, i) => (
-                      <tr key={i}>
+              <div
+                style={{
+                  marginTop: v.title ? 8 : 0,
+                  overflow: "auto",
+                  flex: 1,
+                  width: "100%",
+                }}
+              >
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
                         {v.table.columns.map((c) => (
-                          <td
+                          <th
                             key={c}
                             style={{
+                              textAlign: "left",
+                              borderBottom: "1px solid #374151",
                               padding: 8,
-                              borderBottom: "1px dashed #1f2937",
                             }}
                           >
-                            {row[c]}
-                          </td>
+                            {c}
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {v.table.rows.map((row, i) => (
+                        <tr key={i}>
+                          {v.table.columns.map((c) => (
+                            <td
+                              key={c}
+                              style={{
+                                padding: 8,
+                                borderBottom: "1px dashed #1f2937",
+                              }}
+                            >
+                              {row[c]}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>

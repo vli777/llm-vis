@@ -22,11 +22,13 @@ FIELDS:
 
 DATA HANDLING:
 - The backend injects the data into the spec. DO NOT include "data" in the Vega-Lite spec.
-- You may include "$schema" if you like, but it’s optional.
+- You may include "$schema" if you like, but it's optional.
 
 COLUMN RULES:
 - Use ONLY columns present in the provided schema/profile; never invent columns.
 - Respect types (nominal/ordinal/quantitative/temporal) based on profile hints.
+- When comparing numeric metrics ("vs", "correlation", "trend"), use quantitative encodings on both axes.
+- Use exact column names (case-sensitive) as listed in the schema.
 
 CHART GUIDELINES:
 - Include reasonable encodings (axes, color) and tooltips.
@@ -40,4 +42,6 @@ TABLES:
 VALIDATION:
 - Output MUST be a single valid JSON object with the fields above.
 - No extra keys beyond what is specified.
+- Return real JSON values only. Never use placeholders like <str>, <bool>, <number>, etc.”
+
 """
