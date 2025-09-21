@@ -176,23 +176,27 @@ export default function Page() {
               padding: 16,
               borderRadius: 12,
               position: "relative",
-              maxHeight: "100vh",
+              height: "clamp(320px, 60vh, 720px)",
               overflow: "hidden",
               display: "flex",
               flexDirection: "column",
             }}
           >
             {v.title && <h3 style={{ marginTop: 0 }}>{v.title}</h3>}
-            <div
-              style={{
-                marginTop: v.title ? 8 : 0,
-                overflow: "auto",
-                maxHeight: "100%",
-                width: "100%",
-              }}
-            >
-              {v.type === "chart" && v.spec && <VegaLiteChart spec={v.spec} />}
-              {v.type === "table" && v.table && (
+            {v.type === "chart" && v.spec && (
+              <div style={{ flex: 1, marginTop: v.title ? 8 : 0 }}>
+                <VegaLiteChart spec={v.spec} />
+              </div>
+            )}
+            {v.type === "table" && v.table && (
+              <div
+                style={{
+                  marginTop: v.title ? 8 : 0,
+                  overflow: "auto",
+                  flex: 1,
+                  width: "100%",
+                }}
+              >
                 <div style={{ overflowX: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse" }}>
                     <thead>
@@ -230,8 +234,8 @@ export default function Page() {
                     </tbody>
                   </table>
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
