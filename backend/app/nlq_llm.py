@@ -188,6 +188,10 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
                 scale.setdefault("zero", False)
             if bounds and "domain" not in scale:
                 lo, hi = bounds
+                if lo < min_val:
+                    lo = min_val
+                if hi > max_val:
+                    hi = max_val
                 if field_lc in {"founded year", "founded", "year"}:
                     scale["domain"] = [math.floor(lo), math.ceil(hi)]
                 else:
@@ -1054,9 +1058,6 @@ def handle_llm_nlq(
 
     # run backend ops to produce the data used by either table or chart
     data = exec_operations(df, ops)
-
-    # decide on table vs chart
-    spec = plan.get("vega_lite")
 
     # TABLE (or no spec)
     if vtype == "table" or spec is None:
