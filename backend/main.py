@@ -210,8 +210,8 @@ async def tables(request: Request):
 
 
 @app.get("/table/{table_name}/preview")
-async def table_preview(request: Request, table_name: str, rows: int = 5):
-    """Get a preview of the table data (like df.head())."""
+async def table_preview(request: Request, table_name: str, offset: int = 0, limit: int = 50):
+    """Get a preview of the table data with cursor pagination."""
     sid = require_session_id(request)
     sess = get_session(sid)
 
@@ -219,7 +219,15 @@ async def table_preview(request: Request, table_name: str, rows: int = 5):
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
     df = sess[table_name]
-    preview_df = df.head(min(rows, 100))  # Cap at 100 rows max
+    total_rows = len(df)
+
+    # Cap limit at 100 rows per request
+    limit = min(limit, 100)
+
+    # Get the slice of data
+    start = offset
+    end = min(offset + limit, total_rows)
+    preview_df = df.iloc[start:end]
 
     # Convert to JSON-safe format
     def df_json_safe_preview(df: pd.DataFrame) -> pd.DataFrame:
@@ -232,12 +240,19 @@ async def table_preview(request: Request, table_name: str, rows: int = 5):
 
     safe_df = df_json_safe_preview(preview_df)
 
+    has_more = end < total_rows
+    next_offset = end if has_more else None
+
     resp = {
         "table": table_name,
         "columns": list(safe_df.columns),
         "rows": safe_df.to_dict(orient="records"),
-        "total_rows": len(df),
-        "preview_rows": len(safe_df),
+        "total_rows": total_rows,
+        "offset": offset,
+        "limit": limit,
+        "returned_rows": len(safe_df),
+        "has_more": has_more,
+        "next_offset": next_offset,
     }
 
     _log_response("PREVIEW", resp)
