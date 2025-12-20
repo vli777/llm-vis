@@ -124,3 +124,21 @@ def infer_axis_format(series: pd.Series) -> Optional[str]:
         return "~s"
 
     return None
+
+
+def compact_si_label_expr(axis_format: str) -> Optional[str]:
+    """Build a Vega labelExpr to display billions as B instead of G."""
+    if "~s" not in axis_format:
+        return None
+    prefix = ""
+    if "$" in axis_format:
+        prefix = "$"
+    elif "€" in axis_format:
+        prefix = "€"
+    elif "£" in axis_format:
+        prefix = "£"
+    fmt = ".3~s"
+    expr = f"replace(format(datum.value, '{fmt}'), 'G', 'B')"
+    if prefix:
+        expr = f"'{prefix}' + {expr}"
+    return expr

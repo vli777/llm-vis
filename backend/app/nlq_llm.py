@@ -18,6 +18,7 @@ from .utils.numeric_utils import (
     smart_numeric_series,
     infer_axis_format,
     choose_label_column,
+    compact_si_label_expr,
 )
 from .utils.datetime_utils import (
     infer_temporal_granularity,
@@ -213,6 +214,12 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
                     axis.setdefault("format", "d")
             if "format" not in axis and max_val >= 1_000_000:
                 axis.setdefault("format", "~s")
+            axis_fmt = axis.get("format")
+            if isinstance(axis_fmt, str) and "~s" in axis_fmt:
+                label_expr = compact_si_label_expr(axis_fmt)
+                if label_expr:
+                    axis.setdefault("labelExpr", label_expr)
+                    axis.pop("format", None)
 
     if axis:
         node["axis"] = axis
