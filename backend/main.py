@@ -209,6 +209,41 @@ async def tables(request: Request):
     return resp
 
 
+@app.get("/table/{table_name}/preview")
+async def table_preview(request: Request, table_name: str, rows: int = 5):
+    """Get a preview of the table data (like df.head())."""
+    sid = require_session_id(request)
+    sess = get_session(sid)
+
+    if table_name not in sess:
+        raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
+
+    df = sess[table_name]
+    preview_df = df.head(min(rows, 100))  # Cap at 100 rows max
+
+    # Convert to JSON-safe format
+    def df_json_safe_preview(df: pd.DataFrame) -> pd.DataFrame:
+        """Replace ±inf -> NaN, then NaN -> None for JSON serialization."""
+        if df.empty:
+            return df
+        tmp = df.replace([float('inf'), float('-inf')], None)
+        tmp = tmp.astype(object)
+        return tmp.where(pd.notna(tmp), None)
+
+    safe_df = df_json_safe_preview(preview_df)
+
+    resp = {
+        "table": table_name,
+        "columns": list(safe_df.columns),
+        "rows": safe_df.to_dict(orient="records"),
+        "total_rows": len(df),
+        "preview_rows": len(safe_df),
+    }
+
+    _log_response("PREVIEW", resp)
+    return resp
+
+
 @app.post("/nlq", response_model=None)
 async def nlq(request: Request, body: NLQRequest):
     sid = require_session_id(request)
