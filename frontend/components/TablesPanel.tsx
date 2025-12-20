@@ -19,14 +19,20 @@ type PreviewData = {
   columns: string[];
   rows: Record<string, any>[];
   total_rows: number;
-  preview_rows: number;
+  offset: number;
+  limit: number;
+  returned_rows: number;
+  has_more: boolean;
+  next_offset: number | null;
 };
 
 function TableListItem({ t }: { t: TableInfo }) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
   const sizeTxt = humanBytes(t.file_size);
   const metaBits = [
@@ -45,17 +51,52 @@ function TableListItem({ t }: { t: TableInfo }) {
         .join(", ")
     : "";
 
-  // Auto-fetch preview on mount since we start expanded
+  // Auto-fetch initial preview on mount since we start expanded
   React.useEffect(() => {
     if (isExpanded && !preview && !loading) {
       setLoading(true);
       setError(null);
-      apiGetJSON<PreviewData>(`/table/${t.name}/preview?rows=5`)
+      apiGetJSON<PreviewData>(`/table/${t.name}/preview?offset=0&limit=50`)
         .then(setPreview)
         .catch((e: any) => setError(e.message || "Failed to load preview"))
         .finally(() => setLoading(false));
     }
   }, [isExpanded, preview, loading, t.name]);
+
+  // Load more data when scrolling to bottom
+  const loadMore = React.useCallback(async () => {
+    if (!preview || !preview.has_more || loadingMore) return;
+
+    setLoadingMore(true);
+    try {
+      const nextData = await apiGetJSON<PreviewData>(
+        `/table/${t.name}/preview?offset=${preview.next_offset}&limit=50`
+      );
+      setPreview((prev) => ({
+        ...nextData,
+        rows: [...(prev?.rows || []), ...nextData.rows],
+      }));
+    } catch (e: any) {
+      setError(e.message || "Failed to load more");
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [preview, loadingMore, t.name]);
+
+  // Scroll event handler for infinite scroll
+  const handleScroll = React.useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      const target = e.currentTarget;
+      const scrollPercentage =
+        (target.scrollTop + target.clientHeight) / target.scrollHeight;
+
+      // Load more when scrolled 80% down
+      if (scrollPercentage > 0.8 && preview?.has_more && !loadingMore) {
+        loadMore();
+      }
+    },
+    [preview, loadingMore, loadMore]
+  );
 
   const togglePreview = async () => {
     setIsExpanded(!isExpanded);
@@ -112,46 +153,59 @@ function TableListItem({ t }: { t: TableInfo }) {
           {error && <div className="text-sm text-red-400 py-2">{error}</div>}
 
           {preview && (
-            <div className="overflow-x-auto">
+            <div>
               <div className="text-xs text-slate-400 mb-2">
-                Showing {preview.preview_rows} of {preview.total_rows} rows
+                Showing {preview.rows.length} of {preview.total_rows} rows
+                {preview.has_more && " (scroll for more)"}
               </div>
-              <table className="min-w-full text-xs border border-slate-700 rounded">
-                <thead className="bg-slate-800">
-                  <tr>
-                    {preview.columns.map((col) => (
-                      <th
-                        key={col}
-                        className="px-2 py-1 text-left font-medium text-slate-200 border-b border-slate-700"
-                      >
-                        {col}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="bg-slate-900">
-                  {preview.rows.map((row, idx) => (
-                    <tr
-                      key={idx}
-                      className="border-b border-slate-800 last:border-b-0"
-                    >
+              <div
+                ref={scrollContainerRef}
+                className="overflow-auto max-h-96 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] border border-slate-700 rounded"
+                onScroll={handleScroll}
+              >
+                <table className="min-w-full text-xs">
+                  <thead className="bg-slate-800 sticky top-0 z-10 shadow-md">
+                    <tr>
                       {preview.columns.map((col) => (
-                        <td
+                        <th
                           key={col}
-                          className="px-2 py-1 text-slate-300 max-w-xs truncate"
-                          title={String(row[col] ?? "")}
+                          className="px-2 py-2 text-left font-medium text-slate-200 border-b-2 border-slate-700 bg-slate-800"
                         >
-                          {row[col] === null || row[col] === undefined ? (
-                            <span className="text-slate-500 italic">null</span>
-                          ) : (
-                            String(row[col])
-                          )}
-                        </td>
+                          {col}
+                        </th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="bg-slate-900">
+                    {preview.rows.map((row, idx) => (
+                      <tr
+                        key={idx}
+                        className="border-b border-slate-800 last:border-b-0"
+                      >
+                        {preview.columns.map((col) => (
+                          <td
+                            key={col}
+                            className="px-2 py-1 text-slate-300 max-w-xs truncate"
+                            title={String(row[col] ?? "")}
+                          >
+                            {row[col] === null || row[col] === undefined ? (
+                              <span className="text-slate-500 italic">null</span>
+                            ) : (
+                              String(row[col])
+                            )}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {loadingMore && (
+                  <div className="flex items-center justify-center gap-2 py-3 text-sm text-slate-400">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading more...
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
