@@ -4,44 +4,68 @@ OUTPUT FORMAT (STRICT):
 Return a SINGLE JSON object only. No prose, no code fences, no explanations.
 Use valid JSON with double-quoted keys, no trailing commas.
 
-FIELDS:
-- action: "create" | "update"
-- type: "chart" | "table"
-- title: string  (required when action="create")
-- vega_lite: object (required when action="create" and type="chart")
-- operations: OPTIONAL array of backend ops ONLY if Vega-Lite transforms cannot do it:
-    - {"op":"value_counts", "col": <str>, "as":[<key>,"n"]}
-    - {"op":"explode_counts", "col": <str>, "sep": <regex or str>, "as":[<key>,"n"]}
-    - {"op":"scatter_data", "x": <str>, "y": <str>, "extras":[<str>...], "log": <bool>}
-    - {"op":"corr_pair", "x": <str>, "y": <str>}
-  Prefer Vega-Lite TRANSFORMS (filter, aggregate, bin, timeUnit, calculate, window, joinaggregate, stack, sort) inside "vega_lite".
-- For action="update":
-  - targetId: string (optional) OR target: "last"
-  - patch: array of JSON Patch (RFC 6902) ops to modify the existing Vega-Lite spec
-    e.g., [{"op":"replace","path":"/encoding/x/field","value":"Revenue"}]
+REQUIRED FIELDS:
+- action: "create" | "update" (default: "create")
+- type: "chart" | "table" (default: "chart")
+- title: string (required, max 10 words, concise and descriptive)
 
-DATA HANDLING:
-- The backend injects the data into the spec. DO NOT include "data" in the Vega-Lite spec.
-- You may include "$schema" if you like, but it's optional.
+CHART CREATION (when action="create" and type="chart"):
+- vega_lite: object (REQUIRED) - Full Vega-Lite v5 specification
+  * DO NOT include "data" field (backend injects data automatically)
+  * Include proper encoding channels: x, y, color, size, etc.
+  * Set appropriate type for each encoding: "quantitative", "nominal", "ordinal", "temporal"
+  * Add tooltips for interactivity
+  * Use mark types: "bar", "line", "point", "area", "arc", "rect", "text", etc.
 
-COLUMN RULES:
-- Use ONLY columns present in the provided schema/profile; never invent columns.
-- Respect types (nominal/ordinal/quantitative/temporal) based on profile hints.
-- When comparing numeric metrics ("vs", "correlation", "trend"), use quantitative encodings on both axes.
-- Use exact column names (case-sensitive) as listed in the schema.
+- operations: array (OPTIONAL) - Backend operations, use ONLY when Vega-Lite transforms cannot handle it
+  Supported operations:
+  * {"op":"value_counts", "col":"<column>", "as":["category","count"], "limit":25}
+  * {"op":"explode_counts", "col":"<column>", "sep":"[;,|]", "as":["value","n"], "limit":25}
+  * {"op":"scatter_data", "x":"<col>", "y":"<col>", "extras":["<col>"], "log":false}
+  * {"op":"corr_pair", "x":"<col>", "y":"<col>"}
 
-CHART GUIDELINES:
-- Include reasonable encodings (axes, color) and tooltips.
-- If the prompt asks for style-only changes (colors, titles, scales), return action="update" with a minimal JSON Patch.
-- For simple counts by category, prefer Vega-Lite aggregate transforms (no backend op).
-- Use concise titles (<= 10 words).
+  PREFER Vega-Lite transforms (filter, aggregate, bin, calculate, timeUnit, window, joinaggregate) over backend operations.
 
-TABLES:
-- If the prompt clearly asks for a table, return type="table" with any necessary "operations" to produce the rows/columns.
+UPDATE (when action="update"):
+- patch: array of JSON Patch (RFC 6902) operations
+  Example: [{"op":"replace","path":"/encoding/x/field","value":"Revenue"}]
+- targetId: string (optional) OR target: "last" (update most recent visualization)
+
+CHART TYPE SELECTION GUIDE:
+Use the dataset profile's "visualization_hints" to inform your choice:
+- Temporal data → line chart (mark: "line", x: temporal, y: quantitative)
+- Correlation/scatter → point chart (mark: "point", x: quantitative, y: quantitative)
+- Category comparison → bar chart (mark: "bar", x: nominal/ordinal, y: quantitative or vice versa)
+- Part-to-whole (≤10 categories) → arc chart (mark: "arc", theta: quantitative, color: nominal)
+- Distribution → histogram (use bin transform on quantitative field)
+- Many categories (>10) → horizontal bar (swap x/y) or use top-N filtering
+- Geographic data → consider if lat/lon available for map projections
+- Time series → line/area chart with timeUnit transforms
+
+COLUMN USAGE RULES:
+1. Use ONLY columns present in the dataset profile - never invent column names
+2. Respect the "role" hint for each column (temporal, categorical, measure, geographic, identifier, nominal)
+3. Match encoding types to data types:
+   - Numeric columns → "quantitative"
+   - Date/time columns → "temporal"
+   - Low cardinality text → "nominal" or "ordinal"
+   - High cardinality (>50 unique) → consider filtering or grouping
+4. Use exact column names (case-sensitive) as listed in the profile
+
+BEST PRACTICES:
+- Concise titles: Max 10 words, describe what the chart shows
+- Always include tooltips for key fields
+- For comparisons, sort by the measure (use "sort" in encoding)
+- For time series, use timeUnit (e.g., "yearmonth", "yearquarter") when appropriate
+- Avoid cluttered charts: limit categories to 10-15, use "limit" in operations if needed
+- Use color meaningfully: categorical differentiation or quantitative gradients
+- Set scale domains when helpful (e.g., zero: true for bar charts, zero: false for line charts starting above zero)
 
 VALIDATION:
-- Output MUST be a single valid JSON object with the fields above.
-- No extra keys beyond what is specified.
-- Return real JSON values only. Never use placeholders like <str>, <bool>, <number>, etc.”
+- Output MUST be valid JSON with no trailing commas
+- Never use placeholder values like <str>, <column>, <field>, etc. - use real column names
+- If you reference a column, it must exist in the provided dataset profile
+- type="chart" requires vega_lite object
+- action="update" requires patch array
 
 """
