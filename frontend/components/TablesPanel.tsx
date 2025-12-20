@@ -1,5 +1,7 @@
-import React from "react";
-import { humanBytes } from "@/lib/utils"; 
+import React, { useState } from "react";
+import { humanBytes } from "@/lib/utils";
+import { apiGetJSON } from "@/lib/api";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 
 export type TableInfo = {
   name: string;
@@ -13,7 +15,19 @@ export type TableInfo = {
   dtypes?: Record<string, string>;
 };
 
+type PreviewData = {
+  columns: string[];
+  rows: Record<string, any>[];
+  total_rows: number;
+  preview_rows: number;
+};
+
 function TableListItem({ t }: { t: TableInfo }) {
+  const [isExpanded, setIsExpanded] = useState(true);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
   const sizeTxt = humanBytes(t.file_size);
   const metaBits = [
     t.file_ext ? `.${t.file_ext}` : null,
@@ -31,25 +45,115 @@ function TableListItem({ t }: { t: TableInfo }) {
         .join(", ")
     : "";
 
+  // Auto-fetch preview on mount since we start expanded
+  React.useEffect(() => {
+    if (isExpanded && !preview && !loading) {
+      setLoading(true);
+      setError(null);
+      apiGetJSON<PreviewData>(`/table/${t.name}/preview?rows=5`)
+        .then(setPreview)
+        .catch((e: any) => setError(e.message || "Failed to load preview"))
+        .finally(() => setLoading(false));
+    }
+  }, [isExpanded, preview, loading, t.name]);
+
+  const togglePreview = async () => {
+    setIsExpanded(!isExpanded);
+  };
+
   return (
-    <li className="mb-2">
-      <div className="font-semibold text-slate-200">{t.name}</div>
+    <li className="mb-3">
+      <div
+        className="cursor-pointer hover:bg-slate-900/50 p-2 -mx-2 rounded transition-colors"
+        onClick={togglePreview}
+      >
+        <div className="flex items-start gap-2">
+          <div className="mt-0.5">
+            {isExpanded ? (
+              <ChevronDown className="h-4 w-4 text-slate-400" />
+            ) : (
+              <ChevronRight className="h-4 w-4 text-slate-400" />
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-slate-200">
+              {t.name}{" "}
+              {metaBits && (
+                <span className="text-xs text-slate-400">{metaBits}</span>
+              )}
+            </div>
 
-      {metaBits && (
-        <div className="text-xs text-slate-400">{metaBits}</div>
-      )}
+            {dtypeTxt && (
+              <div className="text-xs text-slate-300 break-words whitespace-normal">
+                <span className="text-slate-200">types:</span>{" "}
+                <span className="break-words">{dtypeTxt}</span>
+              </div>
+            )}
 
-      {colsTxt && (
-        <div className="text-xs text-slate-300 mt-1 break-words whitespace-normal">
-          <span className="text-slate-200">columns:</span>{" "}
-          <span className="break-words">{colsTxt}</span>
+            {colsTxt && (
+              <div className="text-xs text-slate-300 mt-1 break-words whitespace-normal truncate">
+                <span className="text-slate-200">columns:</span>{" "}
+                <span className="break-words">{colsTxt}</span>
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      </div>
 
-      {dtypeTxt && (
-        <div className="text-xs text-slate-300 mt-1 break-words whitespace-normal">
-          <span className="text-slate-200">types:</span>{" "}
-          <span className="break-words">{dtypeTxt}</span>
+      {isExpanded && (
+        <div className="mt-4 ml-6">
+          {loading && (
+            <div className="flex items-center gap-2 text-sm text-slate-400 py-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading preview...
+            </div>
+          )}
+
+          {error && <div className="text-sm text-red-400 py-2">{error}</div>}
+
+          {preview && (
+            <div className="overflow-x-auto">
+              <div className="text-xs text-slate-400 mb-2">
+                Showing {preview.preview_rows} of {preview.total_rows} rows
+              </div>
+              <table className="min-w-full text-xs border border-slate-700 rounded">
+                <thead className="bg-slate-800">
+                  <tr>
+                    {preview.columns.map((col) => (
+                      <th
+                        key={col}
+                        className="px-2 py-1 text-left font-medium text-slate-200 border-b border-slate-700"
+                      >
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="bg-slate-900">
+                  {preview.rows.map((row, idx) => (
+                    <tr
+                      key={idx}
+                      className="border-b border-slate-800 last:border-b-0"
+                    >
+                      {preview.columns.map((col) => (
+                        <td
+                          key={col}
+                          className="px-2 py-1 text-slate-300 max-w-xs truncate"
+                          title={String(row[col] ?? "")}
+                        >
+                          {row[col] === null || row[col] === undefined ? (
+                            <span className="text-slate-500 italic">null</span>
+                          ) : (
+                            String(row[col])
+                          )}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </li>
