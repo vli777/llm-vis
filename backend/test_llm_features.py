@@ -49,6 +49,31 @@ class TestColumnRoleDetection:
             role = _detect_column_role(col_name, series, 0.5)
             assert role == "measure", f"{col_name} should be detected as measure"
 
+    def test_string_encoded_numeric_detection(self):
+        """Test detection of string-encoded numeric values like '$1.3B'."""
+        # Financial data with various formats
+        series = pd.Series(["$1.3B", "$500M", "$2.1B", "$750M", "$1.0B"])
+        role = _detect_column_role("Valuation", series, 0.8)
+        assert role == "measure", "String-encoded financial values should be detected as measure"
+
+    def test_string_encoded_numeric_with_commas(self):
+        """Test detection of numeric strings with comma separators."""
+        series = pd.Series(["1,234.56", "2,345.67", "3,456.78", "4,567.89"])
+        role = _detect_column_role("revenue", series, 0.9)
+        assert role == "measure", "Comma-separated numeric strings should be detected as measure"
+
+    def test_mixed_parseable_strings(self):
+        """Test that mixed parseable/non-parseable strings are classified correctly."""
+        # >50% parseable -> measure
+        series = pd.Series(["$1.3B", "$500M", "$2.1B", "N/A", "$1.0B"])
+        role = _detect_column_role("value", series, 0.8)
+        assert role == "measure", "Mostly parseable strings should be measure"
+
+        # <50% parseable -> nominal
+        series = pd.Series(["$1.3B", "Invalid", "Not a number", "Also invalid", "$1.0B"])
+        role = _detect_column_role("value", series, 0.8)
+        assert role == "nominal", "Mostly non-parseable strings should be nominal"
+
     def test_count_detection_by_name(self):
         """Test count detection based on column name keywords."""
         test_cases = ["count", "quantity", "number", "num_items"]
@@ -125,6 +150,38 @@ class TestDatasetProfiling:
         assert 'columns' in profile
         # Should not have visualization hints when disabled
         assert 'visualization_hints' not in profile
+
+    def test_profile_string_encoded_numerics(self):
+        """Test that string-encoded numeric columns are profiled correctly."""
+        df = pd.DataFrame({
+            'Company': ['A', 'B', 'C', 'D', 'E'],
+            'Valuation': ['$1.3B', '$500M', '$2.1B', '$750M', '$1.0B'],
+            'ARR': ['$100M', '$50M', '$200M', '$75M', '$90M'],
+            'Founded': ['2010', '2015', '2012', '2018', '2011']
+        })
+
+        profile = dataset_profile(df, include_viz_hints=True)
+
+        # Find columns by name
+        cols_by_name = {col['name']: col for col in profile['columns']}
+
+        # Valuation and ARR should be detected as measures with numeric stats
+        assert cols_by_name['Valuation']['role'] == 'measure'
+        assert 'num_stats' in cols_by_name['Valuation']
+        assert 'note' in cols_by_name['Valuation']
+        assert 'string-encoded numeric' in cols_by_name['Valuation']['note']
+
+        assert cols_by_name['ARR']['role'] == 'measure'
+        assert 'num_stats' in cols_by_name['ARR']
+
+        # Founded should be detected as temporal or measure
+        assert cols_by_name['Founded']['role'] in ['temporal', 'measure']
+
+        # Check that numeric stats are reasonable
+        val_stats = cols_by_name['Valuation']['num_stats']
+        assert val_stats['min'] is not None
+        assert val_stats['max'] is not None
+        assert val_stats['max'] > val_stats['min']
 
 
 class TestChartSuggestions:
