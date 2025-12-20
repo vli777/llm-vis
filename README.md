@@ -1,6 +1,6 @@
 # AI Data Vis (Next.js + FastAPI + Vega-Lite)
 
-Generate beautiful, interactive visualizations from natural language using LLMs. Upload your data, describe what you want to see, and get Vega-Lite charts instantly.
+Generate interactive visualizations from natural language using LLMs. Upload your data, describe what you want to see, and get a chart back instantly.
 
 <img width="1087" height="727" alt="Screenshot 2025-12-20 013125" src="https://github.com/user-attachments/assets/7502a23d-f896-4858-b775-3e18815f3192" />
 
