@@ -4,8 +4,8 @@ Generate interactive visualizations from natural language using LLMs. Upload you
 
 <img width="1087" height="727" alt="Screenshot 2025-12-20 013125" src="https://github.com/user-attachments/assets/7502a23d-f896-4858-b775-3e18815f3192" />
 
-Prompt: Valuation vs Founded Year
-<img width="1056" height="554" alt="Screenshot 2025-12-20 013154" src="https://github.com/user-attachments/assets/d8761dd6-2522-4696-9c9c-61458fd58ecd" />
+Example Prompt: ARR vs Valuation (log)
+<img width="1060" height="717" alt="image" src="https://github.com/user-attachments/assets/5142829e-83ef-4176-a6a2-3185bb724691" />
 
 ## Features
 
