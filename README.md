@@ -2,12 +2,10 @@
 
 Generate beautiful, interactive visualizations from natural language using LLMs. Upload your data, describe what you want to see, and get Vega-Lite charts instantly.
 
-Prompt: "bar chart of founding year vs valuation"
-<img width="937" height="1126" alt="image" src="https://github.com/user-attachments/assets/59ebc42b-c62a-4f91-95b1-352db2f69ca9" />
+<img width="1087" height="727" alt="Screenshot 2025-12-20 013125" src="https://github.com/user-attachments/assets/7502a23d-f896-4858-b775-3e18815f3192" />
 
-Prompt: "count of top investors table"
-<img width="623" height="280" alt="image" src="https://github.com/user-attachments/assets/6f28588d-5984-40f9-ab4c-07c4afc38f65" />
-<img width="925" height="1117" alt="image" src="https://github.com/user-attachments/assets/14b06bfd-59b6-4cbb-bf16-9043e5dde6ef" />
+Prompt: Valuation vs Founded Year
+<img width="1056" height="554" alt="Screenshot 2025-12-20 013154" src="https://github.com/user-attachments/assets/d8761dd6-2522-4696-9c9c-61458fd58ecd" />
 
 ## Features
 
