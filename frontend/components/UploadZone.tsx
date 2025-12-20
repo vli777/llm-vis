@@ -10,6 +10,7 @@ export function UploadZone({
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   const upload = async (file: File) => {
     const form = new FormData();
@@ -51,8 +52,13 @@ export function UploadZone({
         maybePromise.catch(console.error);
       }
     } catch (e: any) {
-      console.error(e);
-      setMsg(e?.message || "Upload failed.");
+      console.error("Upload error:", e);
+      const errorMsg = e?.message || "Upload failed.";
+      setMsg(errorMsg);
+      // Show more helpful error for network issues
+      if (errorMsg.includes("fetch")) {
+        setMsg("Cannot connect to backend. Is it running on http://localhost:8000?");
+      }
     } finally {
       setBusy(false);
       // Allow picking the same file again
@@ -60,8 +66,55 @@ export function UploadZone({
     }
   };
 
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // Only set to false if we're leaving the container itself, not child elements
+    if (e.currentTarget === e.target) {
+      setIsDragging(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      // Check if it's a CSV file
+      if (file.type === "text/csv" || file.name.endsWith(".csv")) {
+        upload(file);
+      } else {
+        setMsg("Please upload a CSV file.");
+      }
+    }
+  };
+
   return (
-    <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 p-4">
+    <div
+      className={`flex items-center justify-between gap-4 rounded-xl border-2 border-dashed p-6 transition-all ${
+        isDragging
+          ? "border-blue-500 bg-blue-950/20 scale-[1.02]"
+          : "border-slate-700 bg-slate-950 hover:border-slate-600"
+      }`}
+      onDragOver={handleDragOver}
+      onDragEnter={handleDragEnter}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <div>
         <div className="font-medium">Upload CSV</div>
         <div className="text-sm text-slate-400">
