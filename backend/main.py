@@ -104,12 +104,32 @@ async def upload(request: Request, file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail=f"Failed to read CSV: {e}")
 
     # --- normalize to pandas nullable dtypes (so text -> 'string', ints -> 'Int64', etc.) ---
-    df = df.convert_dtypes(
-        convert_string=True,
-        convert_integer=True,
-        convert_boolean=True,
-        convert_floating=True,
-    )
+    # Handle PyArrow date types that convert_dtypes doesn't support
+    try:
+        df = df.convert_dtypes(
+            convert_string=True,
+            convert_integer=True,
+            convert_boolean=True,
+            convert_floating=True,
+        )
+    except (KeyError, ValueError) as e:
+        # PyArrow date types (date32, date64) aren't handled by convert_dtypes
+        # Convert them to datetime64 first, then retry
+        logger.warning(f"convert_dtypes failed with PyArrow types: {e}. Converting manually.")
+        for col in df.columns:
+            # Check for PyArrow date types
+            if hasattr(df[col].dtype, 'pyarrow_dtype'):
+                import pyarrow as pa
+                pa_type = df[col].dtype.pyarrow_dtype
+                if pa.types.is_date(pa_type) or pa.types.is_timestamp(pa_type):
+                    df[col] = pd.to_datetime(df[col])
+        # Retry conversion after fixing date columns
+        df = df.convert_dtypes(
+            convert_string=True,
+            convert_integer=True,
+            convert_boolean=True,
+            convert_floating=True,
+        )
 
     # If any columns remain object but are all strings, explicitly cast to string dtype
     for c in df.columns:
