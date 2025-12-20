@@ -13,6 +13,7 @@ Prompt: "count of top investors table"
 
 - **Smart Chart Recommendations**: Automatically suggests appropriate chart types based on your data characteristics (temporal, categorical, numeric)
 - **Semantic Data Understanding**: Detects column roles (dates, locations, measures, identifiers) for better visualization choices
+- **String-Encoded Numeric Parsing**: Automatically recognizes and parses financial data like "$1.3B", "1,234.56" for proper charting
 - **Structured Outputs**: Pydantic-driven validation ensures reliable, type-safe responses from LLMs
 - **Multi-Provider Support**: Works with Groq, OpenAI, or NVIDIA with provider-specific optimizations
 - **Rich Context**: LLM receives statistical profiles, data distributions, and visualization hints for smarter suggestions
@@ -64,6 +65,7 @@ python -m pytest test_llm_features.py -v
 
 The test suite covers:
 - Column role detection (temporal, geographic, measure, categorical)
+- String-encoded numeric parsing ($1.3B, 1,234.56, etc.)
 - Dataset profiling with visualization hints
 - Chart type recommendations
 - Pydantic model validation

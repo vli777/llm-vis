@@ -169,17 +169,43 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
 
     axis: dict = node.get("axis") if isinstance(node.get("axis"), dict) else {}
     scale: dict = node.get("scale") if isinstance(node.get("scale"), dict) else {}
-
-    field_lc = field.lower()
-    if field_lc in {"arr", "valuation", "revenue"}:
-        axis.setdefault("format", "$~s")
+    node_type = (node.get("type") or "").lower()
 
     # Examine the data to decide whether zero should be included
     series = None
     if df is not None and field in df.columns:
+        if node_type == "temporal":
+            series = df[field]
+            if pd.api.types.is_datetime64_any_dtype(series):
+                valid = series.dropna()
+                if not valid.empty:
+                    months = valid.dt.month
+                    days = valid.dt.day
+                    times = valid.dt.normalize()
+                    years = valid.dt.year
+                    if (
+                        (months == 1).all()
+                        and (days == 1).all()
+                        and (valid == times).all()
+                        and (years >= 1000).all()
+                        and (years <= 3000).all()
+                    ):
+                        axis.setdefault("format", "%Y")
+                        node.setdefault("timeUnit", "year")
+            if isinstance(scale.get("domain"), list) and scale["domain"]:
+                if all(isinstance(v, (int, float)) for v in scale["domain"]):
+                    scale.pop("domain", None)
+            if axis:
+                node["axis"] = axis
+            if scale:
+                node["scale"] = scale
+            return
         series = _smart_numeric_series(df[field])
         valid = series.dropna()
         if not valid.empty:
+            fmt_hint = _infer_axis_format(df[field])
+            if fmt_hint:
+                axis.setdefault("format", fmt_hint)
             min_val = float(valid.min())
             max_val = float(valid.max())
             # When all values are strictly positive or strictly negative, avoid forcing zero
@@ -192,10 +218,12 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
                     lo = min_val
                 if hi > max_val:
                     hi = max_val
-                if field_lc in {"founded year", "founded", "year"}:
-                    scale["domain"] = [math.floor(lo), math.ceil(hi)]
-                else:
-                    scale["domain"] = [lo, hi]
+                scale["domain"] = [lo, hi]
+            if (valid.round() == valid).all():
+                if 1000 <= min_val <= 3000 and 1000 <= max_val <= 3000:
+                    axis.setdefault("format", "d")
+            if "format" not in axis and max_val >= 1_000_000:
+                axis.setdefault("format", "~s")
 
     if axis:
         node["axis"] = axis
@@ -241,6 +269,76 @@ def _smart_numeric_series(series: pd.Series) -> pd.Series:
         return pd.to_numeric(series, errors="coerce")
     converted = series.map(_smart_numeric_value)
     return pd.to_numeric(converted, errors="coerce")
+
+
+def _infer_axis_format(series: pd.Series) -> Optional[str]:
+    """Infer a d3-format string based on raw value patterns."""
+    if series.empty:
+        return None
+    sample = series.dropna()
+    if sample.empty:
+        return None
+
+    text = sample.astype("string").str.strip()
+    if text.empty:
+        return None
+
+    n = len(text)
+    if n == 0:
+        return None
+
+    def ratio(mask: pd.Series) -> float:
+        try:
+            return float(mask.mean())
+        except Exception:
+            return 0.0
+
+    dollar = ratio(text.str.contains(r"\\$"))
+    euro = ratio(text.str.contains(r"€"))
+    pound = ratio(text.str.contains(r"£"))
+    if max(dollar, euro, pound) >= 0.2:
+        if dollar >= max(euro, pound):
+            return "$~s"
+        if euro >= pound:
+            return "€~s"
+        return "£~s"
+
+    if ratio(text.str.contains(r"%$")) >= 0.2:
+        return ".0%"
+
+    if ratio(text.str.contains(r"(?i)\\d\\s*[kmbt]\\b")) >= 0.2:
+        return "~s"
+
+    return None
+
+
+def _maybe_coerce_year_temporal(series: pd.Series) -> Optional[pd.Series]:
+    """Coerce year-like values into datetime (year precision) for temporal charts."""
+    if series.empty:
+        return None
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+
+    if pd.api.types.is_numeric_dtype(series):
+        vals = pd.to_numeric(series, errors="coerce")
+        valid = vals.dropna()
+        if valid.empty:
+            return None
+        if not (valid.round() == valid).all():
+            return None
+        if not ((valid >= 1000) & (valid <= 3000)).all():
+            return None
+        years = pd.to_numeric(series, errors="coerce").round().astype("Int64")
+        return pd.to_datetime(years.astype("string"), format="%Y", errors="coerce")
+
+    if pd.api.types.is_string_dtype(series) or pd.api.types.is_object_dtype(series):
+        year_str = series.astype("string").str.extract(r"(\d{4})", expand=False)
+        dt = pd.to_datetime(year_str, format="%Y", errors="coerce")
+        if dt.isna().all():
+            return None
+        return dt
+
+    return None
 
 
 def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
@@ -935,14 +1033,7 @@ def _coerce_numeric_inplace(df: pd.DataFrame, cols: List[str]) -> None:
             continue
         if pd.api.types.is_numeric_dtype(df[c]):
             continue
-        # strip common junk then to_numeric
-        df[c] = (
-            df[c]
-            .astype("string")
-            .str.replace(r"[,\$\u00A0]", "", regex=True)
-            .str.replace(r"%$", "", regex=True)
-        )
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+        df[c] = _smart_numeric_series(df[c])
 
 
 def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -1030,12 +1121,11 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             # Optional log transform
             if op.get("log"):
                 # drop non-positive before log
-                result = result[
-                    (pd.to_numeric(result[x], errors="coerce") > 0)
-                    & (pd.to_numeric(result[y], errors="coerce") > 0)
-                ]
-                result[x] = np.log(pd.to_numeric(result[x], errors="coerce"))
-                result[y] = np.log(pd.to_numeric(result[y], errors="coerce"))
+                x_vals = _smart_numeric_series(result[x])
+                y_vals = _smart_numeric_series(result[y])
+                result = result[(x_vals > 0) & (y_vals > 0)]
+                result[x] = np.log(_smart_numeric_series(result[x]))
+                result[y] = np.log(_smart_numeric_series(result[y]))
 
             result = (
                 result[cols].replace([np.inf, -np.inf], np.nan).dropna(subset=[x, y])
@@ -1095,6 +1185,11 @@ def _sanitize_for_spec(df: pd.DataFrame, spec: Dict[str, Any]) -> pd.DataFrame:
         if not isinstance(field, str) or field not in out.columns:
             continue
         kind = (node.get("type") or "").lower()
+        if kind == "temporal":
+            converted = _maybe_coerce_year_temporal(out[field])
+            if converted is not None:
+                out[field] = converted
+            continue
         if kind == "quantitative":
             out[field] = _smart_numeric_series(out[field])
             numeric_fields.append(field)
