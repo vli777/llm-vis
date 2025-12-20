@@ -12,6 +12,7 @@ import hashlib
 import json
 import time
 from datetime import datetime
+from collections import OrderedDict
 
 logger = logging.getLogger("uvicorn.error")
 load_dotenv()
@@ -24,6 +25,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+PREVIEW_CACHE_MAX = 512
+_preview_cache: "OrderedDict[tuple, dict]" = OrderedDict()
+
+
+def _preview_cache_get(key: tuple):
+    cached = _preview_cache.get(key)
+    if cached is not None:
+        _preview_cache.move_to_end(key)
+    return cached
+
+
+def _preview_cache_set(key: tuple, value: dict) -> None:
+    _preview_cache[key] = value
+    _preview_cache.move_to_end(key)
+    if len(_preview_cache) > PREVIEW_CACHE_MAX:
+        _preview_cache.popitem(last=False)
 
 
 def require_session_id(request: Request) -> str:
@@ -153,6 +172,11 @@ async def upload(request: Request, file: UploadFile = File(...)):
     # store dataframe and remember hash -> name
     sess[name] = df
     sess_hashes[file_hash] = name
+    # Clear any stale previews for this table name (defensive).
+    if _preview_cache:
+        keys_to_drop = [k for k in _preview_cache.keys() if k[0] == sid and k[1] == name]
+        for k in keys_to_drop:
+            _preview_cache.pop(k, None)
 
     # --- metadata ---
     created_at = datetime.utcnow().isoformat() + "Z"
@@ -218,11 +242,16 @@ async def table_preview(request: Request, table_name: str, offset: int = 0, limi
     if table_name not in sess:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-    df = sess[table_name]
-    total_rows = len(df)
-
     # Cap limit at 100 rows per request
     limit = min(limit, 100)
+
+    cache_key = (sid, table_name, offset, limit)
+    cached = _preview_cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    df = sess[table_name]
+    total_rows = len(df)
 
     # Get the slice of data
     start = offset
@@ -255,6 +284,7 @@ async def table_preview(request: Request, table_name: str, offset: int = 0, limi
         "next_offset": next_offset,
     }
 
+    _preview_cache_set(cache_key, resp)
     _log_response("PREVIEW", resp)
     return resp
 
