@@ -14,6 +14,15 @@ from .llm import (
     _coerce_plan_object,
     _validate_ops,
 )
+from .utils.numeric_utils import (
+    smart_numeric_series,
+    infer_axis_format,
+    choose_label_column,
+)
+from .utils.datetime_utils import (
+    infer_temporal_granularity,
+    maybe_coerce_year_temporal,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -126,17 +135,6 @@ def _fix_field(value, df):
     return resolved or value
 
 
-# mapping used for smart numeric parsing
-_SUFFIX_MAP = {
-    "k": 1_000.0,
-    "m": 1_000_000.0,
-    "mm": 1_000_000.0,
-    "b": 1_000_000_000.0,
-    "bn": 1_000_000_000.0,
-    "t": 1_000_000_000_000.0,
-}
-
-
 def _nice_bounds(lo: float, hi: float) -> Optional[Tuple[float, float]]:
     if not (math.isfinite(lo) and math.isfinite(hi)):
         return None
@@ -179,19 +177,10 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
             if pd.api.types.is_datetime64_any_dtype(series):
                 valid = series.dropna()
                 if not valid.empty:
-                    months = valid.dt.month
-                    days = valid.dt.day
-                    times = valid.dt.normalize()
-                    years = valid.dt.year
-                    if (
-                        (months == 1).all()
-                        and (days == 1).all()
-                        and (valid == times).all()
-                        and (years >= 1000).all()
-                        and (years <= 3000).all()
-                    ):
-                        axis.setdefault("format", "%Y")
-                        node.setdefault("timeUnit", "year")
+                    gran = infer_temporal_granularity(series)
+                    if gran:
+                        axis.setdefault("format", gran["format"])
+                        node.setdefault("timeUnit", gran["timeUnit"])
             if isinstance(scale.get("domain"), list) and scale["domain"]:
                 if all(isinstance(v, (int, float)) for v in scale["domain"]):
                     scale.pop("domain", None)
@@ -200,10 +189,10 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
             if scale:
                 node["scale"] = scale
             return
-        series = _smart_numeric_series(df[field])
+        series = smart_numeric_series(df[field])
         valid = series.dropna()
         if not valid.empty:
-            fmt_hint = _infer_axis_format(df[field])
+            fmt_hint = infer_axis_format(df[field])
             if fmt_hint:
                 axis.setdefault("format", fmt_hint)
             min_val = float(valid.min())
@@ -229,116 +218,6 @@ def _apply_axis_format(node: dict, field: str, df: pd.DataFrame) -> None:
         node["axis"] = axis
     if scale:
         node["scale"] = scale
-
-
-def _smart_numeric_value(val) -> float:
-    if val is None:
-        return np.nan
-    if isinstance(val, (int, float)):
-        return float(val)
-    text = str(val).strip()
-    if not text:
-        return np.nan
-    text = text.replace(",", "").replace("$", "").replace("€", "")
-    if text.endswith("%"):
-        inner = text[:-1].strip()
-        try:
-            return float(inner) / 100.0
-        except ValueError:
-            return np.nan
-    lower = text.lower()
-    if lower in {"n/a", "na", "nan", "none", "null", "-", "--", "—"}:
-        return np.nan
-
-    for suffix in sorted(_SUFFIX_MAP.keys(), key=len, reverse=True):
-        if lower.endswith(suffix):
-            num_part = text[: -len(suffix)]
-            try:
-                return float(num_part) * _SUFFIX_MAP[suffix]
-            except ValueError:
-                return np.nan
-
-    try:
-        return float(text)
-    except ValueError:
-        return np.nan
-
-
-def _smart_numeric_series(series: pd.Series) -> pd.Series:
-    if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce")
-    converted = series.map(_smart_numeric_value)
-    return pd.to_numeric(converted, errors="coerce")
-
-
-def _infer_axis_format(series: pd.Series) -> Optional[str]:
-    """Infer a d3-format string based on raw value patterns."""
-    if series.empty:
-        return None
-    sample = series.dropna()
-    if sample.empty:
-        return None
-
-    text = sample.astype("string").str.strip()
-    if text.empty:
-        return None
-
-    n = len(text)
-    if n == 0:
-        return None
-
-    def ratio(mask: pd.Series) -> float:
-        try:
-            return float(mask.mean())
-        except Exception:
-            return 0.0
-
-    dollar = ratio(text.str.contains(r"\\$"))
-    euro = ratio(text.str.contains(r"€"))
-    pound = ratio(text.str.contains(r"£"))
-    if max(dollar, euro, pound) >= 0.2:
-        if dollar >= max(euro, pound):
-            return "$~s"
-        if euro >= pound:
-            return "€~s"
-        return "£~s"
-
-    if ratio(text.str.contains(r"%$")) >= 0.2:
-        return ".0%"
-
-    if ratio(text.str.contains(r"(?i)\\d\\s*[kmbt]\\b")) >= 0.2:
-        return "~s"
-
-    return None
-
-
-def _maybe_coerce_year_temporal(series: pd.Series) -> Optional[pd.Series]:
-    """Coerce year-like values into datetime (year precision) for temporal charts."""
-    if series.empty:
-        return None
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return series
-
-    if pd.api.types.is_numeric_dtype(series):
-        vals = pd.to_numeric(series, errors="coerce")
-        valid = vals.dropna()
-        if valid.empty:
-            return None
-        if not (valid.round() == valid).all():
-            return None
-        if not ((valid >= 1000) & (valid <= 3000)).all():
-            return None
-        years = pd.to_numeric(series, errors="coerce").round().astype("Int64")
-        return pd.to_datetime(years.astype("string"), format="%Y", errors="coerce")
-
-    if pd.api.types.is_string_dtype(series) or pd.api.types.is_object_dtype(series):
-        year_str = series.astype("string").str.extract(r"(\d{4})", expand=False)
-        dt = pd.to_datetime(year_str, format="%Y", errors="coerce")
-        if dt.isna().all():
-            return None
-        return dt
-
-    return None
 
 
 def _canon_fields_in_spec(spec: dict, df: pd.DataFrame) -> dict:
@@ -408,7 +287,7 @@ def _collect_column_stats(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], List[
         series = df[col]
 
         # Try to parse as numeric, including string-encoded values like "$1.3B"
-        numeric_series = _smart_numeric_series(series)
+        numeric_series = smart_numeric_series(series)
         non_na = numeric_series.notna().sum()
         parseable_ratio = non_na / total if total > 0 else 0.0
 
@@ -708,6 +587,119 @@ def _enforce_prompt_preferences(
         if isinstance(node, dict) and field in numeric_names:
             _apply_axis_format(node, field, df)
 
+    def ensure_tooltip_fields(x_field: Optional[str], y_field: Optional[str]) -> None:
+        tooltips = enc.setdefault("tooltip", [])
+        if isinstance(tooltips, dict):
+            tooltips = [tooltips]
+        if not isinstance(tooltips, list):
+            return
+        existing = {
+            t.get("field")
+            for t in tooltips
+            if isinstance(t, dict) and t.get("field")
+        }
+
+        def upsert_tooltip(
+            field: str,
+            kind: Optional[str],
+            fmt: Optional[str] = None,
+            time_unit: Optional[str] = None,
+            force_format: bool = False,
+        ) -> None:
+            tip = None
+            for item in tooltips:
+                if isinstance(item, dict) and item.get("field") == field:
+                    tip = item
+                    break
+            if tip is None:
+                tip = {"field": field}
+                tooltips.append(tip)
+                existing.add(field)
+            if kind:
+                tip.setdefault("type", kind)
+            if fmt:
+                if force_format or "format" not in tip:
+                    tip["format"] = fmt
+            if time_unit:
+                if force_format or "timeUnit" not in tip:
+                    tip["timeUnit"] = time_unit
+
+        def tooltip_format(channel: str) -> Optional[str]:
+            node = enc.get(channel)
+            if isinstance(node, dict):
+                axis = node.get("axis")
+                if isinstance(axis, dict):
+                    return axis.get("format")
+            return None
+
+        def full_number_format(field: str, axis_fmt: Optional[str]) -> Optional[str]:
+            if field not in df.columns:
+                return None
+            series = smart_numeric_series(df[field])
+            valid = series.dropna()
+            if valid.empty:
+                return None
+            is_int = (valid.round() == valid).all()
+            decimals = "0" if is_int else "2"
+            prefix = ""
+            if isinstance(axis_fmt, str):
+                if "$" in axis_fmt:
+                    prefix = "$"
+                elif "€" in axis_fmt:
+                    prefix = "€"
+                elif "£" in axis_fmt:
+                    prefix = "£"
+            return f"{prefix},.{decimals}f" if prefix else f",.{decimals}f"
+
+        if x_field and x_field in df.columns:
+            x_node = enc.get("x")
+            x_type = (x_node.get("type") or "").lower() if isinstance(x_node, dict) else None
+            if x_type == "temporal":
+                gran = infer_temporal_granularity(df[x_field])
+                if gran:
+                    upsert_tooltip(
+                        x_field,
+                        "temporal",
+                        fmt=gran["format"],
+                        time_unit=gran["timeUnit"],
+                        force_format=True,
+                    )
+                    x_type = None
+            else:
+                axis_fmt = tooltip_format("x")
+                x_fmt = axis_fmt
+                force = isinstance(axis_fmt, str) and "~s" in axis_fmt
+                if force:
+                    x_fmt = full_number_format(x_field, axis_fmt) or axis_fmt
+                upsert_tooltip(x_field, x_type, fmt=x_fmt, force_format=force)
+
+        if y_field and y_field in df.columns:
+            y_node = enc.get("y")
+            y_type = (y_node.get("type") or "").lower() if isinstance(y_node, dict) else None
+            if y_type == "temporal":
+                gran = infer_temporal_granularity(df[y_field])
+                if gran:
+                    upsert_tooltip(
+                        y_field,
+                        "temporal",
+                        fmt=gran["format"],
+                        time_unit=gran["timeUnit"],
+                        force_format=True,
+                    )
+                    y_type = None
+            axis_fmt = tooltip_format("y")
+            y_fmt = axis_fmt
+            force = isinstance(axis_fmt, str) and "~s" in axis_fmt
+            if force:
+                y_fmt = full_number_format(y_field, axis_fmt) or axis_fmt
+            upsert_tooltip(y_field, y_type, fmt=y_fmt, force_format=force)
+
+        label_col = choose_label_column(df, categorical_info)
+        if label_col:
+            upsert_tooltip(label_col, "nominal")
+
+        enc["tooltip"] = tooltips
+
     correlation_hint = bool(tokens & {"correlation", "correl", "relationship"})
     scatter_hint = bool(tokens & {"scatter", "scatterplot"})
     vs_hint = bool(tokens & {"vs", "versus"})
@@ -743,8 +735,8 @@ def _enforce_prompt_preferences(
                 and x_field is not None
                 and y_field is not None
             ):
-                x_vals = _smart_numeric_series(df[x_field])
-                y_vals = _smart_numeric_series(df[y_field])
+                x_vals = smart_numeric_series(df[x_field])
+                y_vals = smart_numeric_series(df[y_field])
                 sub = pd.concat({x_field: x_vals, y_field: y_vals}, axis=1).dropna()
                 if len(sub) >= 2:
                     corr = sub[x_field].corr(sub[y_field], method="pearson")
@@ -753,6 +745,7 @@ def _enforce_prompt_preferences(
                         corr_txt = f" (r={corr:.2f})"
                         if corr_txt not in title:
                             spec["title"] = title + corr_txt
+        ensure_tooltip_fields(x_field, y_field)
     else:
         apply_format_if_numeric("x")
         apply_format_if_numeric("y")
@@ -825,7 +818,7 @@ def _detect_column_role(col_name: str, series: pd.Series, unique_ratio: float) -
         # Sample the series for performance
         sample = series.dropna().head(min(100, len(series)))
         if len(sample) > 0:
-            parsed = _smart_numeric_series(sample)
+            parsed = smart_numeric_series(sample)
             # If >50% of non-null values are parseable as numeric, treat as measure
             parseable_ratio = parsed.notna().sum() / len(sample)
             if parseable_ratio > 0.5:
@@ -932,7 +925,7 @@ def dataset_profile(
                 has_temporal = True
 
         # Check if column is numeric OR parseable as numeric
-        s_num = _smart_numeric_series(s_sample)
+        s_num = smart_numeric_series(s_sample)
         parseable_count = s_num.notna().sum()
         is_parseable_numeric = (parseable_count / work_rows) > 0.5 if work_rows > 0 else False
 
@@ -1033,7 +1026,7 @@ def _coerce_numeric_inplace(df: pd.DataFrame, cols: List[str]) -> None:
             continue
         if pd.api.types.is_numeric_dtype(df[c]):
             continue
-        df[c] = _smart_numeric_series(df[c])
+        df[c] = smart_numeric_series(df[c])
 
 
 def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame:
@@ -1121,11 +1114,11 @@ def exec_operations(df: pd.DataFrame, ops: List[Dict[str, Any]]) -> pd.DataFrame
             # Optional log transform
             if op.get("log"):
                 # drop non-positive before log
-                x_vals = _smart_numeric_series(result[x])
-                y_vals = _smart_numeric_series(result[y])
+                x_vals = smart_numeric_series(result[x])
+                y_vals = smart_numeric_series(result[y])
                 result = result[(x_vals > 0) & (y_vals > 0)]
-                result[x] = np.log(_smart_numeric_series(result[x]))
-                result[y] = np.log(_smart_numeric_series(result[y]))
+                result[x] = np.log(smart_numeric_series(result[x]))
+                result[y] = np.log(smart_numeric_series(result[y]))
 
             result = (
                 result[cols].replace([np.inf, -np.inf], np.nan).dropna(subset=[x, y])
@@ -1186,12 +1179,12 @@ def _sanitize_for_spec(df: pd.DataFrame, spec: Dict[str, Any]) -> pd.DataFrame:
             continue
         kind = (node.get("type") or "").lower()
         if kind == "temporal":
-            converted = _maybe_coerce_year_temporal(out[field])
+            converted = maybe_coerce_year_temporal(out[field])
             if converted is not None:
                 out[field] = converted
             continue
         if kind == "quantitative":
-            out[field] = _smart_numeric_series(out[field])
+            out[field] = smart_numeric_series(out[field])
             numeric_fields.append(field)
 
     if numeric_fields:
