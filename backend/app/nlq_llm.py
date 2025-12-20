@@ -308,9 +308,15 @@ def _collect_column_stats(df: pd.DataFrame) -> Tuple[List[Dict[str, Any]], List[
     for col in df.columns:
         tokens = set(_tokenize(col))
         series = df[col]
+
+        # Try to parse as numeric, including string-encoded values like "$1.3B"
         numeric_series = _smart_numeric_series(series)
         non_na = numeric_series.notna().sum()
-        if total > 0 and non_na >= max(3, int(total * 0.05)):
+        parseable_ratio = non_na / total if total > 0 else 0.0
+
+        # Consider it numeric if >50% of values are parseable as numbers
+        # This catches both native numeric types AND formatted strings like "$1.3B"
+        if total > 0 and non_na >= max(3, int(total * 0.05)) and parseable_ratio > 0.5:
             variance = float(numeric_series.var(skipna=True)) if non_na >= 2 else 0.0
             if not math.isfinite(variance):
                 variance = 0.0
@@ -703,7 +709,7 @@ def _detect_column_role(col_name: str, series: pd.Series, unique_ratio: float) -
     # Numeric columns
     if pd.api.types.is_numeric_dtype(series):
         # Check for measure keywords first (before ID check)
-        if any(word in name_lower for word in ["amount", "price", "value", "revenue", "cost", "sales", "total", "profit", "income", "expense"]):
+        if any(word in name_lower for word in ["amount", "price", "value", "revenue", "cost", "sales", "total", "profit", "income", "expense", "valuation", "arr"]):
             return "measure"
         if any(word in name_lower for word in ["count", "quantity", "number", "num", "qty"]):
             return "count"
@@ -714,6 +720,23 @@ def _detect_column_role(col_name: str, series: pd.Series, unique_ratio: float) -
 
         # Otherwise it's a measure (numeric columns are typically measures)
         return "measure"
+
+    # Check if string/object columns are parseable as numeric (e.g., "$1.3B", "1,234.56")
+    # This catches financial data stored as formatted strings
+    if pd.api.types.is_string_dtype(series) or pd.api.types.is_object_dtype(series):
+        # Sample the series for performance
+        sample = series.dropna().head(min(100, len(series)))
+        if len(sample) > 0:
+            parsed = _smart_numeric_series(sample)
+            # If >50% of non-null values are parseable as numeric, treat as measure
+            parseable_ratio = parsed.notna().sum() / len(sample)
+            if parseable_ratio > 0.5:
+                # Check for measure keywords
+                if any(word in name_lower for word in ["amount", "price", "value", "revenue", "cost", "sales", "total", "profit", "income", "expense", "valuation", "arr"]):
+                    return "measure"
+                # Even without keywords, if highly parseable, it's likely a measure
+                if parseable_ratio > 0.8:
+                    return "measure"
 
     # Categorical indicators (text with low cardinality)
     if unique_ratio < 0.05:
@@ -810,16 +833,20 @@ def dataset_profile(
             if role == "temporal":
                 has_temporal = True
 
-        if pd.api.types.is_numeric_dtype(s):
-            s_num = pd.to_numeric(s_sample, errors="coerce")
+        # Check if column is numeric OR parseable as numeric
+        s_num = _smart_numeric_series(s_sample)
+        parseable_count = s_num.notna().sum()
+        is_parseable_numeric = (parseable_count / work_rows) > 0.5 if work_rows > 0 else False
+
+        if pd.api.types.is_numeric_dtype(s) or is_parseable_numeric:
             numeric_cols_info.append({"name": c, "variance": float(s_num.var(skipna=True)) if len(s_num.dropna()) >= 2 else 0.0})
             stats = {
-                "min": float(s_num.min()) if work_rows else None,
-                "max": float(s_num.max()) if work_rows else None,
-                "mean": float(s_num.mean()) if work_rows else None,
-                "std": float(s_num.std()) if work_rows else None,
+                "min": float(s_num.min()) if work_rows and parseable_count > 0 else None,
+                "max": float(s_num.max()) if work_rows and parseable_count > 0 else None,
+                "mean": float(s_num.mean()) if work_rows and parseable_count > 0 else None,
+                "std": float(s_num.std()) if work_rows and parseable_count > 0 else None,
             }
-            if include_quants:
+            if include_quants and parseable_count > 0:
                 qs = s_num.quantile([0.25, 0.5, 0.75]).to_dict()
                 stats.update(
                     {
@@ -829,6 +856,9 @@ def dataset_profile(
                     }
                 )
             info["num_stats"] = stats
+            # Add note if it's a string-encoded numeric for LLM context
+            if not pd.api.types.is_numeric_dtype(s) and is_parseable_numeric:
+                info["note"] = "string-encoded numeric (will be parsed)"
         elif pd.api.types.is_datetime64_any_dtype(s):
             has_temporal = True
             s_dt = pd.to_datetime(s_sample, errors="coerce")
