@@ -5,7 +5,7 @@ import pandas as pd
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from .prompts import SYSTEM_PROMPT
 from .models import Plan
-from .llm_loader import get_chat_model, LLMConfigError
+from .llm_loader import get_chat_model, LLMConfigError, supports_native_structured_output, get_provider_name
 import logging
 
 logger = logging.getLogger("uvicorn.error")
@@ -141,6 +141,18 @@ def build_user_prompt(
     *,
     profile: Dict[str, Any] | None = None,
 ) -> str:
+    """
+    Build a rich, context-aware prompt for the LLM.
+
+    Includes:
+    - Column schema with type information
+    - Dataset profile with statistics and examples
+    - Visualization hints and suggestions
+    - Existing visualization context
+    - User's natural language query
+    """
+
+    # Existing visualizations context
     ctx_txt = ""
     if client_ctx:
         cards = client_ctx.get("cards") or []
@@ -151,26 +163,91 @@ def build_user_prompt(
         if selected:
             ctx_txt += ("\n" if ctx_txt else "") + f"Selected: {selected}"
 
+    # Enhanced dataset profile
     profile_txt = ""
+    viz_hints_txt = ""
+
     if profile:
-        # Keep it LLM-friendly: short JSON-ish block
-        # (Don’t dump the whole DF; just this summary.)
+        # Extract visualization hints if available
+        viz_hints = profile.get("visualization_hints", {})
+        if viz_hints:
+            suggestions = viz_hints.get("suggested_chart_types", [])
+            summary = viz_hints.get("summary", {})
+
+            viz_hints_txt = "VISUALIZATION GUIDANCE:\n"
+            viz_hints_txt += f"- Dataset has {summary.get('numeric_columns', 0)} numeric columns, "
+            viz_hints_txt += f"{summary.get('categorical_columns', 0)} categorical columns\n"
+
+            if summary.get('has_temporal_data'):
+                viz_hints_txt += "- Contains temporal/time-series data\n"
+
+            if suggestions:
+                viz_hints_txt += f"- Suggested chart types: {', '.join(suggestions)}\n"
+
+        # Compact profile for token efficiency but still informative
+        # Include column details with roles and sample values
+        profile_compact = {
+            "row_count": profile.get("row_count"),
+            "columns": []
+        }
+
+        for col in profile.get("columns", []):
+            col_info = {
+                "name": col.get("name"),
+                "dtype": col.get("dtype"),
+                "role": col.get("role", "unknown"),
+                "unique": col.get("unique"),
+                "missing_pct": col.get("missing_pct", 0),
+            }
+
+            # Add relevant stats based on column type
+            if "num_stats" in col:
+                stats = col["num_stats"]
+                col_info["range"] = f"{stats.get('min', 'N/A')} to {stats.get('max', 'N/A')}"
+                col_info["mean"] = stats.get("mean")
+
+            elif "datetime_range" in col:
+                col_info["time_range"] = col["datetime_range"]
+
+            elif "top_values" in col:
+                # Show top 3 values for categorical
+                top_vals = col["top_values"][:3]
+                col_info["top_values"] = [f"{v['value']} ({v['n']})" for v in top_vals]
+
+            # Always include examples
+            col_info["examples"] = col.get("examples", [])
+
+            profile_compact["columns"].append(col_info)
+
+        # Add sample rows
+        if "sample_rows" in profile:
+            profile_compact["sample_rows"] = profile["sample_rows"]
+
         profile_txt = (
-            "Dataset profile (compact JSON):\n"
-            + json.dumps(profile, ensure_ascii=False)[:8000]
+            "DATASET PROFILE:\n"
+            + json.dumps(profile_compact, ensure_ascii=False, indent=2)[:6000]
         )
 
-    return f"""Dataset columns:
+    return f"""DATASET SCHEMA:
 {columns_markdown}
 
-{profile_txt if profile_txt else ""}
+{profile_txt}
+
+{viz_hints_txt}
 
 {ctx_txt if ctx_txt else ""}
 
-User prompt:
+USER REQUEST:
 {user_prompt}
 
-Return ONLY JSON as specified by the system prompt. Do not include any explanatory text or formatting fences.
+INSTRUCTIONS:
+- Analyze the user request and dataset characteristics
+- Choose the most appropriate visualization type based on the data and request
+- Use exact column names from the schema above
+- Respect column roles (temporal, categorical, measure, etc.)
+- Include helpful tooltips and labels
+- Return ONLY valid JSON matching the schema defined in the system prompt
+- Do NOT include code fences, explanations, or any text outside the JSON object
 """
 
 def _validate_ops(ops: list[dict]) -> list[dict]:
@@ -306,19 +383,51 @@ def _load_plan_json(text: str) -> dict:
             raise ValueError(f"json_parse_failed after repair: {e}; teaser={teaser}")
 
 
-def chat_plan_structured(system_prompt: str, user_message: str) -> Plan:
+def chat_plan_structured(system_prompt: str, user_message: str, use_strict_mode: bool = False) -> Plan:
+    """
+    Request a structured Plan output from the LLM using Pydantic models.
+
+    Args:
+        system_prompt: System prompt defining the task
+        user_message: User message with data context
+        use_strict_mode: If True, use strict schema validation (OpenAI only)
+
+    Returns:
+        Validated Plan object
+
+    Raises:
+        LLMError: If structured output fails or validation fails
+    """
     llm = _get_llm()
+    provider = get_provider_name()
+
     try:
-        llm_struct = llm.with_structured_output(Plan)
+        # Configure structured output based on provider
+        if use_strict_mode and provider in {"openai", "oa"}:
+            # OpenAI supports strict mode for better validation
+            llm_struct = llm.with_structured_output(Plan, method="json_schema", strict=True)
+        else:
+            # Standard structured output via tool calling (works for Groq, OpenAI)
+            llm_struct = llm.with_structured_output(Plan)
+
         msg = [SystemMessage(system_prompt), HumanMessage(user_message)]
+        logger.debug(f"Requesting structured output from {provider} with strict={use_strict_mode}")
+
         out = llm_struct.invoke(msg)
+
         if out is None:
             raise LLMError("structured_output_failed: empty result")
+
         if isinstance(out, Plan):
+            logger.debug("Received valid Plan object from LLM")
             return out
+
         if isinstance(out, dict):
+            logger.debug("Received dict, converting to Plan")
             return Plan(**out)
-        # last chance: parse text
+
+        # Fallback: parse text response
+        logger.warning("Structured output returned unexpected type, attempting text parsing")
         text = _as_text_from_response(out) or _as_text_from_content(
             getattr(out, "content", None)
         )
@@ -326,7 +435,9 @@ def chat_plan_structured(system_prompt: str, user_message: str) -> Plan:
         obj = json.loads(block)
         obj = _coerce_plan_object(obj)
         return Plan(**obj)
+
     except Exception as e:
+        logger.error(f"Structured output failed: {e}")
         raise LLMError(f"structured_output_failed: {e}")
 
 
@@ -379,40 +490,90 @@ def plan_from_llm(
     profile: dict | None = None,
     max_attempts: int = 2,
 ) -> dict:
-    """Ask the LLM for a visualization plan with lightweight retry logic."""
+    """
+    Ask the LLM for a visualization plan with intelligent retry logic.
+
+    Strategy:
+    1. Try Pydantic structured output first (if provider supports it)
+    2. Fall back to JSON mode with response_format
+    3. Last resort: text parsing with repair
+
+    Args:
+        columns_md: Markdown representation of columns
+        user_prompt: User's natural language query
+        client_ctx: Client context (existing visualizations, selections)
+        profile: Rich dataset profile with visualization hints
+        max_attempts: Maximum retry attempts
+
+    Returns:
+        Dictionary representation of the Plan
+
+    Raises:
+        LLMError: If all attempts fail
+    """
+
+    provider = get_provider_name()
+    use_pydantic_first = supports_native_structured_output()
+
+    logger.info(f"Planning with provider={provider}, pydantic_first={use_pydantic_first}")
 
     attempts: list[dict] = []
     # first attempt uses full profile (if provided); later attempts drop it to reduce prompt size
     if profile is not None:
-        attempts.append({"profile": profile})
-    attempts.append({"profile": None})
-    while len(attempts) < max_attempts:
-        attempts.append({"profile": None})
+        attempts.append({"profile": profile, "method": "pydantic" if use_pydantic_first else "json"})
+
+    # Subsequent attempts try different methods
+    attempts.append({"profile": None, "method": "pydantic" if use_pydantic_first else "json"})
+    attempts.append({"profile": None, "method": "json" if use_pydantic_first else "pydantic"})
 
     last_error: Exception | None = None
 
-    for attempt in attempts[: max(1, max_attempts)]:
+    for i, attempt in enumerate(attempts[:max_attempts]):
         prof = attempt.get("profile")
-        # keep profile on first pass; later passes fall back to the lighter prompt
+        method = attempt.get("method", "pydantic")
+
+        # Build user message with context
         user_msg = build_user_prompt(columns_md, user_prompt, client_ctx, profile=prof)
+
         if last_error is not None:
             user_msg += (
                 "\n\nPrevious response could not be parsed because: "
                 + _short_error(last_error)
                 + "\nReturn EXACTLY one valid JSON object as specified."
             )
+
+        logger.debug(f"Attempt {i+1}/{max_attempts} using method={method}")
+
         try:
-            return _plan_to_dict(chat_json(SYSTEM_PROMPT, user_msg))
-        except Exception as exc:  # noqa: BLE001 - bubble up after retries
+            if method == "pydantic" and use_pydantic_first:
+                # Pydantic-first approach (best for OpenAI, Groq)
+                plan = chat_plan_structured(SYSTEM_PROMPT, user_msg, use_strict_mode=(provider in {"openai", "oa"}))
+                return _plan_to_dict(plan)
+            else:
+                # JSON mode approach (best for NVIDIA and fallback)
+                result = chat_json(SYSTEM_PROMPT, user_msg)
+                return result
+
+        except Exception as exc:
+            logger.warning(f"Attempt {i+1} failed with {method}: {_short_error(exc)}")
             last_error = exc
-            # structured-output fallback (tolerates providers ignoring response_format)
+
+            # Try alternate method as immediate fallback
             try:
-                fallback = chat_plan_structured(SYSTEM_PROMPT, user_msg)
-                return _plan_to_dict(fallback)
-            except Exception as exc2:  # noqa: BLE001 - capture the real failure
+                if method == "pydantic":
+                    logger.debug("Pydantic failed, trying JSON mode")
+                    result = chat_json(SYSTEM_PROMPT, user_msg)
+                    return result
+                else:
+                    logger.debug("JSON mode failed, trying Pydantic")
+                    plan = chat_plan_structured(SYSTEM_PROMPT, user_msg)
+                    return _plan_to_dict(plan)
+            except Exception as exc2:
+                logger.warning(f"Fallback also failed: {_short_error(exc2)}")
                 last_error = exc2
                 continue
 
+    # All attempts failed
     if last_error is not None:
-        raise LLMError(f"plan_failed_after_retries: {_short_error(last_error)}")
+        raise LLMError(f"plan_failed_after_{max_attempts}_retries: {_short_error(last_error)}")
     raise LLMError("plan_failed_after_retries: unknown error")

@@ -125,3 +125,29 @@ def get_chat_model(temperature: float = 0.1) -> BaseChatModel:
     """Public entry point used by the rest of the app."""
 
     return create_chat_model(temperature=temperature)
+
+
+def supports_native_structured_output() -> bool:
+    """
+    Check if the current provider supports native structured outputs via tool calling.
+
+    Returns True for:
+    - OpenAI (native structured output support)
+    - Groq (supports tool calling with llama models)
+
+    Returns False for:
+    - NVIDIA (limited structured output support, better with JSON mode)
+    """
+    provider = _resolve_provider()
+
+    # OpenAI and Groq have excellent structured output support
+    if provider in {"openai", "oa", "groq"}:
+        return True
+
+    # NVIDIA/other providers - use JSON mode instead
+    return False
+
+
+def get_provider_name() -> str:
+    """Return the configured provider name."""
+    return _resolve_provider()
