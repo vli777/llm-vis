@@ -2,6 +2,13 @@
 
 Generate beautiful, interactive visualizations from natural language using LLMs. Upload your data, describe what you want to see, and get Vega-Lite charts instantly.
 
+Prompt: "bar chart of founding year vs valuation"
+<img width="937" height="1126" alt="image" src="https://github.com/user-attachments/assets/59ebc42b-c62a-4f91-95b1-352db2f69ca9" />
+
+Prompt: "count of top investors table"
+<img width="623" height="280" alt="image" src="https://github.com/user-attachments/assets/6f28588d-5984-40f9-ab4c-07c4afc38f65" />
+<img width="925" height="1117" alt="image" src="https://github.com/user-attachments/assets/14b06bfd-59b6-4cbb-bf16-9043e5dde6ef" />
+
 ## Features
 
 - **Smart Chart Recommendations**: Automatically suggests appropriate chart types based on your data characteristics (temporal, categorical, numeric)
@@ -61,15 +68,4 @@ The test suite covers:
 - Chart type recommendations
 - Pydantic model validation
 - Provider capability detection
-
-### Examples
-
-Prompt: "bar chart of founding year vs valuation"
-<img width="937" height="1126" alt="image" src="https://github.com/user-attachments/assets/59ebc42b-c62a-4f91-95b1-352db2f69ca9" />
-
-Prompt: "count of top investors table"
-<img width="623" height="280" alt="image" src="https://github.com/user-attachments/assets/6f28588d-5984-40f9-ab4c-07c4afc38f65" />
-<img width="925" height="1117" alt="image" src="https://github.com/user-attachments/assets/14b06bfd-59b6-4cbb-bf16-9043e5dde6ef" />
-
-
 
