@@ -684,14 +684,93 @@ def _enforce_prompt_preferences(
 PROFILE_MAX_ROWS = 2000
 
 
+def _detect_column_role(col_name: str, series: pd.Series, unique_ratio: float) -> str:
+    """Infer semantic role of a column based on name and characteristics."""
+    name_lower = col_name.lower()
+
+    # Temporal indicators (highest priority)
+    if any(word in name_lower for word in ["date", "time", "year", "month", "day", "timestamp"]):
+        return "temporal"
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "temporal"
+
+    # Geographic indicators
+    if any(word in name_lower for word in ["country", "city", "state", "region", "location", "geo", "lat", "lon", "latitude", "longitude"]):
+        # But only if not too unique (e.g., coordinates might be high cardinality)
+        if unique_ratio < 0.5 or "country" in name_lower or "city" in name_lower or "state" in name_lower:
+            return "geographic"
+
+    # Numeric columns
+    if pd.api.types.is_numeric_dtype(series):
+        # Check for measure keywords first (before ID check)
+        if any(word in name_lower for word in ["amount", "price", "value", "revenue", "cost", "sales", "total", "profit", "income", "expense"]):
+            return "measure"
+        if any(word in name_lower for word in ["count", "quantity", "number", "num", "qty"]):
+            return "count"
+
+        # ID/identifier only if very high uniqueness AND name contains "id"
+        if "id" in name_lower and unique_ratio > 0.9:
+            return "identifier"
+
+        # Otherwise it's a measure (numeric columns are typically measures)
+        return "measure"
+
+    # Categorical indicators (text with low cardinality)
+    if unique_ratio < 0.05:
+        return "categorical"
+
+    # High uniqueness text columns
+    if unique_ratio > 0.9:
+        return "identifier"
+
+    return "nominal"
+
+
+def _suggest_chart_types(numeric_info: List[Dict[str, Any]], categorical_info: List[Dict[str, Any]], has_temporal: bool) -> List[str]:
+    """Suggest appropriate chart types based on column characteristics."""
+    suggestions = []
+
+    n_numeric = len(numeric_info)
+    n_categorical = len(categorical_info)
+
+    # Temporal data → line chart
+    if has_temporal:
+        suggestions.append("line chart (temporal trends)")
+
+    # 2+ numeric → scatter plot
+    if n_numeric >= 2:
+        suggestions.append("scatter plot (correlations)")
+
+    # 1 categorical + 1 numeric → bar chart
+    if n_categorical >= 1 and n_numeric >= 1:
+        suggestions.append("bar chart (category comparisons)")
+
+    # Low cardinality categorical → pie/donut
+    low_card_cats = [c for c in categorical_info if c.get("unique", 0) <= 10]
+    if low_card_cats:
+        suggestions.append("pie/donut chart (part-to-whole)")
+
+    # Many categories → horizontal bar or treemap
+    high_card_cats = [c for c in categorical_info if c.get("unique", 0) > 10]
+    if high_card_cats:
+        suggestions.append("horizontal bar chart (many categories)")
+
+    # Distribution analysis
+    if n_numeric >= 1:
+        suggestions.append("histogram (distribution)")
+
+    return suggestions[:4]  # Limit to top 4 suggestions
+
+
 def dataset_profile(
     df: pd.DataFrame,
     *,
     max_cols: int = 30,
     include_quants: bool = True,
+    include_viz_hints: bool = True,
 ) -> Dict[str, Any]:
     """
-    Compact, LLM-friendly profile of the current table.
+    Compact, LLM-friendly profile of the current table with visualization hints.
     Keep it small: truncate long strings and cap lists.
     """
     nrows = len(df)
@@ -701,6 +780,10 @@ def dataset_profile(
         work_df = df.sample(PROFILE_MAX_ROWS, random_state=0)
     work_rows = len(work_df)
     cols = []
+    has_temporal = False
+    numeric_cols_info = []
+    categorical_cols_info = []
+
     for i, c in enumerate(df.columns):
         if i >= max_cols:
             break
@@ -709,17 +792,28 @@ def dataset_profile(
         dtype = str(s.dtype)
         missing = int(s.isna().sum())
         unique = int(s_sample.nunique(dropna=True))
+        unique_ratio = unique / nrows if nrows > 0 else 0.0
+
         info: Dict[str, Any] = {
             "name": c,
             "dtype": dtype,
             "missing_pct": _pct(missing, nrows),
             "unique": unique,
+            "unique_ratio": round(unique_ratio, 3),
             "examples": _example_values(s_sample, 3),
         }
 
+        # Detect semantic role
+        if include_viz_hints:
+            role = _detect_column_role(c, s, unique_ratio)
+            info["role"] = role
+            if role == "temporal":
+                has_temporal = True
+
         if pd.api.types.is_numeric_dtype(s):
             s_num = pd.to_numeric(s_sample, errors="coerce")
-            info["num_stats"] = {
+            numeric_cols_info.append({"name": c, "variance": float(s_num.var(skipna=True)) if len(s_num.dropna()) >= 2 else 0.0})
+            stats = {
                 "min": float(s_num.min()) if work_rows else None,
                 "max": float(s_num.max()) if work_rows else None,
                 "mean": float(s_num.mean()) if work_rows else None,
@@ -727,27 +821,43 @@ def dataset_profile(
             }
             if include_quants:
                 qs = s_num.quantile([0.25, 0.5, 0.75]).to_dict()
-                info["num_stats"].update(
+                stats.update(
                     {
                         f"q{int(q * 100)}": float(v)
                         for q, v in qs.items()
                         if not math.isnan(v)
                     }
                 )
+            info["num_stats"] = stats
         elif pd.api.types.is_datetime64_any_dtype(s):
+            has_temporal = True
             s_dt = pd.to_datetime(s_sample, errors="coerce")
             info["datetime_range"] = {
                 "min": s_dt.min().isoformat() if s_dt.notna().any() else None,
                 "max": s_dt.max().isoformat() if s_dt.notna().any() else None,
             }
         else:
+            categorical_cols_info.append({"name": c, "unique": unique, "ratio": unique_ratio})
             info["top_values"] = _topk_counts(s_sample, 5)
 
         cols.append(info)
 
     profile: Dict[str, Any] = {"row_count": nrows, "columns": cols}
 
-    # 👇 add 1–3 sample rows (stringified and truncated) for extra context
+    # Add visualization hints
+    if include_viz_hints:
+        viz_hints = {
+            "suggested_chart_types": _suggest_chart_types(numeric_cols_info, categorical_cols_info, has_temporal),
+            "summary": {
+                "numeric_columns": len(numeric_cols_info),
+                "categorical_columns": len(categorical_cols_info),
+                "has_temporal_data": has_temporal,
+                "total_columns": len(cols),
+            }
+        }
+        profile["visualization_hints"] = viz_hints
+
+    # add 1–3 sample rows (stringified and truncated) for extra context
     if work_rows > 0:
         sample = (
             work_df.sample(min(3, work_rows), random_state=0)
