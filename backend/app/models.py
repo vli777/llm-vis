@@ -2,11 +2,6 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Literal, Union
 
 
-class NLQRequest(BaseModel):
-    prompt: str
-    clientContext: Optional[Dict[str, Any]] = None
-
-
 class TableInfo(BaseModel):
     name: str
     rows: int

@@ -6,7 +6,7 @@ import pytest
 import pandas as pd
 from pydantic import ValidationError
 
-from app.nlq_llm import dataset_profile, _detect_column_role, _suggest_chart_types
+from skills.profile import dataset_profile, detect_column_role as _detect_column_role, suggest_chart_types as _suggest_chart_types
 from app.models import Plan, Operation
 from app.llm_loader import supports_native_structured_output, get_provider_name
 

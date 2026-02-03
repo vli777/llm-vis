@@ -1,9 +1,10 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from app.session_store import get_session, get_session_hashes, get_session_meta
-from app.models import NLQRequest
+from core.storage import get_session, get_session_hashes, get_session_meta
+from core.models import NLQRequest
 from app.nlq_llm import handle_llm_nlq
+from server.api import router as eda_router
 import pandas as pd
 import io
 from dotenv import load_dotenv
@@ -25,6 +26,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount the EDA API router
+app.include_router(eda_router)
 
 
 PREVIEW_CACHE_MAX = 512

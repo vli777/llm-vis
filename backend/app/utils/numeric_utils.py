@@ -1,56 +1,8 @@
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
-_SUFFIX_MAP = {
-    "k": 1_000.0,
-    "m": 1_000_000.0,
-    "mm": 1_000_000.0,
-    "b": 1_000_000_000.0,
-    "bn": 1_000_000_000.0,
-    "t": 1_000_000_000_000.0,
-}
-
-
-def smart_numeric_value(val) -> float:
-    if val is None:
-        return np.nan
-    if isinstance(val, (int, float)):
-        return float(val)
-    text = str(val).strip()
-    if not text:
-        return np.nan
-    text = text.replace(",", "").replace("$", "").replace("€", "")
-    if text.endswith("%"):
-        inner = text[:-1].strip()
-        try:
-            return float(inner) / 100.0
-        except ValueError:
-            return np.nan
-    lower = text.lower()
-    if lower in {"n/a", "na", "nan", "none", "null", "-", "--", "—"}:
-        return np.nan
-
-    for suffix in sorted(_SUFFIX_MAP.keys(), key=len, reverse=True):
-        if lower.endswith(suffix):
-            num_part = text[: -len(suffix)]
-            try:
-                return float(num_part) * _SUFFIX_MAP[suffix]
-            except ValueError:
-                return np.nan
-
-    try:
-        return float(text)
-    except ValueError:
-        return np.nan
-
-
-def smart_numeric_series(series: pd.Series) -> pd.Series:
-    if pd.api.types.is_numeric_dtype(series):
-        return pd.to_numeric(series, errors="coerce")
-    converted = series.map(smart_numeric_value)
-    return pd.to_numeric(converted, errors="coerce")
+from core.utils import smart_numeric_series, smart_numeric_value  # noqa: F401
 
 
 def choose_label_column(df: pd.DataFrame, categorical_info: list[dict]) -> Optional[str]:
