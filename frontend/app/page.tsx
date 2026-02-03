@@ -2,28 +2,25 @@
 import { useEffect, useRef, useState } from "react";
 import { UploadZone } from "../components/UploadZone";
 import { PromptBar } from "../components/PromptBar";
-import { VegaLiteChart } from "../components/VegaLiteChart";
-import { apiGetJSON, apiPostJSON } from "../lib/api";
-import { applyVizPatch } from "../lib/viz";
-import { humanBytes } from "../lib/utils";
-import { TableInfo } from "../types/tables";
+import { apiGetJSON, apiPostJSON, getSessionId } from "../lib/api";
 import TablesPanel from "@/components/TablesPanel";
+import RechartsCard from "@/components/charts/RechartsCard";
+import EDATimeline from "@/components/EDATimeline";
+import { useSSE } from "@/lib/useSSE";
+import type { EDAReport, ViewResult } from "@/types/chart";
+import { Loader2 } from "lucide-react";
 
-type Viz = {
-  id: string;
-  type: "chart" | "table";
-  title?: string;
-  spec?: any;
-  table?: { columns: string[]; rows: any[] };
-};
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 export default function Page() {
   const [tables, setTables] = useState<any[]>([]);
-  const [viz, setViz] = useState<Viz[]>([]);
+  const [report, setReport] = useState<EDAReport | null>(null);
   const [pending, setPending] = useState(false);
-  const controllerRef = useRef<AbortController | null>(null);
-  const latestReq = useRef<number>(0);
+  const [error, setError] = useState<string | null>(null);
+  const [useStreaming, setUseStreaming] = useState(true);
   const tablesReq = useRef<number>(0);
+
+  const { state: sseState, connect: sseConnect, close: sseClose } = useSSE();
 
   const refreshTables = async () => {
     const reqId = Date.now();
@@ -33,12 +30,10 @@ export default function Page() {
       const next = r.tables || [];
       if (tablesReq.current !== reqId) return;
       setTables(next);
-      if (next.length === 0) setViz([]);
     } catch (e) {
       console.error(e);
       if (tablesReq.current !== reqId) return;
       setTables([]);
-      setViz([]);
     }
   };
 
@@ -46,88 +41,82 @@ export default function Page() {
     refreshTables();
   }, []);
 
-  const onUploaded = () => refreshTables();
+  const onUploaded = () => {
+    refreshTables();
+    setReport(null);
+    setError(null);
+    sseClose();
+  };
 
-  const onPrompt = async (prompt: string) => {
-    // cancel any in-flight request
-    controllerRef.current?.abort();
-    const controller = new AbortController();
-    controllerRef.current = controller;
+  const runEDA = async (query?: string) => {
+    if (tables.length === 0) {
+      setError("Upload a CSV file first.");
+      return;
+    }
 
-    const myReqId = Date.now();
-    latestReq.current = myReqId;
     setPending(true);
+    setError(null);
+    setReport(null);
+    sseClose();
 
+    let connectedSSE = false;
     try {
-      const res = await apiPostJSON(
-        "/nlq",
-        { prompt },
-        { signal: controller.signal }
-      );
+      const body: any = {};
+      if (query) body.query = query;
 
-      // ignore late responses
-      if (latestReq.current !== myReqId) return;
-
-      // --- handle update actions (JSON Patch) ---
-      if (res?.action === "update") {
-        setViz((cards) => {
-          if (!cards.length) return cards;
-          let idx = -1;
-          if (res.targetId) idx = cards.findIndex((c) => c.id === res.targetId);
-          if (idx < 0 && res.target === "last") idx = 0; // newest-first list
-          if (idx < 0) idx = 0;
-
-          const target = cards[idx];
-          if (!target || target.type !== "chart" || !target.spec) return cards;
-
-          // if model sent a full replacement spec, prefer overwrite
-          if (res.spec) {
-            const next = cards.slice();
-            next[idx] = { ...target, spec: res.spec };
-            return next;
-          }
-
-          // otherwise apply JSON Patch
-          const patched = applyVizPatch(target.spec, res.patch || []);
-          const next = cards.slice();
-          next[idx] = { ...target, spec: patched };
-          return next;
-        });
-        return; // done
+      if (useStreaming) {
+        // Streaming mode: POST with ?stream=1, then connect SSE
+        const res = await apiPostJSON<{ run_id: string; streaming: boolean }>(
+          "/api/runs?stream=1",
+          body
+        );
+        if (res.streaming && res.run_id) {
+          sseConnect(res.run_id, getSessionId(), API_BASE);
+          connectedSSE = true;
+          // Keep pending until SSE completes
+          return;
+        }
       }
 
-      // --- create actions (default path) ---
-      if (res.type === "chart") {
-        console.log("Chart response", res);
-        setViz((v) => [
-          {
-            id: crypto.randomUUID(),
-            type: "chart",
-            title: res.title,
-            spec: res.spec,
-          },
-          ...v,
-        ]);
-      } else if (res.type === "table") {
-        console.log("Table response", res);
-        setViz((v) => [
-          {
-            id: crypto.randomUUID(),
-            type: "table",
-            title: res.title,
-            table: res.table,
-          },
-          ...v,
-        ]);
-      } else {
-        console.error("Unexpected response", res);
-      }
-    } catch (e) {
-      if ((e as any).name !== "AbortError") console.error(e);
+      // Sync fallback
+      const res = await apiPostJSON<EDAReport>("/api/runs", body);
+      setReport(res);
+    } catch (e: any) {
+      console.error("EDA run failed:", e);
+      setError(e?.message || "EDA run failed.");
     } finally {
-      if (latestReq.current === myReqId) setPending(false);
+      if (!connectedSSE) {
+        setPending(false);
+      }
     }
   };
+
+  // Track SSE completion to clear pending state
+  useEffect(() => {
+    if (sseState.status === "complete" || sseState.status === "error") {
+      setPending(false);
+    }
+    if (sseState.status === "error" && sseState.error) {
+      setError(sseState.error);
+    }
+  }, [sseState.status, sseState.error]);
+
+  const onPrompt = async (prompt: string) => {
+    await runEDA(prompt);
+  };
+
+  // Determine what to render: SSE streaming views or sync report
+  const isStreaming = sseState.status === "streaming" || sseState.status === "connecting";
+  const hasStreamedViews = sseState.views.size > 0;
+  const showStreamingUI = hasStreamedViews || isStreaming || sseState.status === "complete";
+
+  // Build views map for sync mode
+  const syncViewsById = new Map<string, ViewResult>();
+  if (report) {
+    for (const v of report.views) {
+      syncViewsById.set(v.id, v);
+    }
+  }
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
@@ -147,11 +136,24 @@ export default function Page() {
           borderRadius: 12,
         }}
       >
-        <PromptBar
-          onSubmit={onPrompt}
-          placeholder="e.g., Scatter ARR vs Valuation (log), color by industry"
-          disabled={pending}
-        />
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <PromptBar
+              onSubmit={onPrompt}
+              placeholder="Ask a question about the data, or click Run EDA"
+              disabled={pending}
+            />
+          </div>
+          <button
+            onClick={() => runEDA()}
+            disabled={pending || tables.length === 0}
+            className="rounded-lg border border-blue-600 bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shrink-0"
+          >
+            {pending && <Loader2 className="h-4 w-4 animate-spin" />}
+            {pending ? "Running..." : "Run EDA"}
+          </button>
+        </div>
+
         <div
           style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap" }}
         >
@@ -162,85 +164,121 @@ export default function Page() {
         </div>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr",
-          gap: 16,
-          marginTop: 24,
-        }}
-      >
-        {viz.map((v) => (
-          <div
-            key={v.id}
-            style={{
-              background: "#111827",
-              padding: 16,
-              borderRadius: 12,
-              position: "relative",
-              height: "clamp(320px, 60vh, 720px)",
-              overflow: "hidden",
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            {v.title && <h3 style={{ marginTop: 0 }}>{v.title}</h3>}
-            {v.type === "chart" && v.spec && (
-              <div style={{ flex: 1, marginTop: v.title ? 8 : 0 }}>
-                <VegaLiteChart spec={v.spec} />
+      {/* Error display */}
+      {error && (
+        <div className="mt-4 p-3 rounded-lg bg-red-950/50 border border-red-800 text-red-300 text-sm">
+          {error}
+        </div>
+      )}
+
+      {/* SSE Streaming UI */}
+      {showStreamingUI && (
+        <div className="mt-6">
+          {/* Timeline sidebar + views */}
+          <div className="flex gap-4">
+            {/* Timeline */}
+            <div className="w-64 shrink-0">
+              <EDATimeline
+                steps={sseState.steps}
+                progress={sseState.progress}
+                status={sseState.status}
+              />
+            </div>
+
+            {/* Streamed views */}
+            <div className="flex-1">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {Array.from(sseState.views.values()).map((view) => (
+                  <div key={view.id} className="min-h-[320px]">
+                    <RechartsCard
+                      spec={view.spec}
+                      explanation={view.explanation}
+                    />
+                  </div>
+                ))}
               </div>
-            )}
-            {v.type === "table" && v.table && (
-              <div
-                style={{
-                  marginTop: v.title ? 8 : 0,
-                  overflow: "auto",
-                  flex: 1,
-                  width: "100%",
-                }}
-              >
-                <div style={{ overflowX: "auto" }}>
-                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                    <thead>
-                      <tr>
-                        {v.table.columns.map((c) => (
-                          <th
-                            key={c}
-                            style={{
-                              textAlign: "left",
-                              borderBottom: "1px solid #374151",
-                              padding: 8,
-                            }}
-                          >
-                            {c}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {v.table.rows.map((row, i) => (
-                        <tr key={i}>
-                          {v.table.columns.map((c) => (
-                            <td
-                              key={c}
-                              style={{
-                                padding: 8,
-                                borderBottom: "1px dashed #1f2937",
-                              }}
-                            >
-                              {row[c]}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+
+              {isStreaming && sseState.views.size === 0 && (
+                <div className="flex items-center justify-center py-12 text-slate-500">
+                  <Loader2 className="h-6 w-6 animate-spin mr-2" />
+                  <span>Generating charts...</span>
                 </div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        ))}
-      </div>
+        </div>
+      )}
+
+      {/* Synchronous Report (fallback when not streaming) */}
+      {report && !showStreamingUI && (
+        <div className="mt-6">
+          {/* Profile summary */}
+          {report.profile && (
+            <div className="mb-4 p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <h2 className="text-lg font-semibold text-slate-200 mb-1">
+                {report.table_name}
+              </h2>
+              <p className="text-sm text-slate-400">
+                {report.profile.row_count.toLocaleString()} rows,{" "}
+                {report.profile.columns.length} columns
+                {report.profile.visualization_hints?.summary && (
+                  <>
+                    {" "}&mdash;{" "}
+                    {report.profile.visualization_hints.summary.numeric_columns} numeric,{" "}
+                    {report.profile.visualization_hints.summary.categorical_columns} categorical
+                    {report.profile.visualization_hints.summary.has_temporal_data && ", has temporal data"}
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+
+          {/* Steps with their views */}
+          {report.steps.map((step, si) => (
+            <div key={si} className="mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <div className="h-6 w-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white">
+                  {si + 1}
+                </div>
+                <h2 className="text-base font-semibold text-slate-200">
+                  {step.headline}
+                </h2>
+              </div>
+
+              {step.warnings.length > 0 && (
+                <div className="mb-2 text-xs text-amber-400">
+                  {step.warnings.map((w, wi) => (
+                    <div key={wi}>&#9888; {w}</div>
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {step.views.map((viewId) => {
+                  const view = syncViewsById.get(viewId);
+                  if (!view) return null;
+                  return (
+                    <div key={view.id} className="min-h-[320px]">
+                      <RechartsCard
+                        spec={view.spec}
+                        explanation={view.explanation}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {step.findings.length > 0 && (
+                <div className="mt-2 text-xs text-slate-400 space-y-1">
+                  {step.findings.map((f, fi) => (
+                    <div key={fi}>{f}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
