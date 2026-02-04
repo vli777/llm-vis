@@ -18,6 +18,7 @@ Chart data contract (data_inline):
 from __future__ import annotations
 
 import math
+import logging
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -33,6 +34,8 @@ from core.models import (
     ViewResult,
 )
 from core.utils import df_to_records_safe, resolve_col, smart_numeric_series
+
+logger = logging.getLogger("uvicorn.error")
 
 
 # ---------------------------------------------------------------------------
