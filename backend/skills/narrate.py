@@ -73,24 +73,25 @@ def summarize_step(
     try:
         from app.llm import chat_json
 
-        # Build context
+        # Build compact context (keep payload small for reasoning models)
         view_summaries = []
         for v in views:
-            summary = {
+            summary: Dict[str, Any] = {
                 "title": v.spec.title,
                 "chart_type": v.spec.chart_type.value,
                 "data_points": len(v.data_inline),
+                "fields": v.plan.fields_used,
             }
-            # Include a sample of the data for context
-            if v.data_inline:
-                summary["sample"] = v.data_inline[:3]
+            # Include top/bottom value for bar charts
+            if v.data_inline and v.spec.chart_type.value == "bar":
+                summary["top"] = v.data_inline[0]
             view_summaries.append(summary)
 
         user_msg = json.dumps({
             "step_type": step.step_type.value,
             "table": profile.table_name,
             "row_count": profile.row_count,
-            "columns": [{"name": c.name, "role": c.role.value, "dtype": c.dtype} for c in profile.columns[:15]],
+            "columns": [c.name for c in profile.columns[:15]],
             "views": view_summaries,
         }, default=str)
 
@@ -126,7 +127,7 @@ def plan_next_actions(
         user_msg = json.dumps({
             "table": profile.table_name,
             "row_count": profile.row_count,
-            "columns": [{"name": c.name, "role": c.role.value} for c in profile.columns[:15]],
+            "columns": [c.name for c in profile.columns[:15]],
             "steps_done": done_types,
             "views_count": len(views_done),
             "budget_remaining": budget,

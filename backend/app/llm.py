@@ -441,12 +441,11 @@ def chat_plan_structured(system_prompt: str, user_message: str, use_strict_mode:
         raise LLMError(f"structured_output_failed: {e}")
 
 
-def chat_json(system_prompt: str, user_message: str) -> dict:
+def chat_json(system_prompt: str, user_message: str, *, max_tokens: int = 2048) -> dict:
     llm = _get_llm().bind(
         extra_body={
             "response_format": {"type": "json_object"},
-            "max_tokens": 512,
-            # "temperature": 0.1,  # optional
+            "max_tokens": max_tokens,
         }
     )
     messages = [
