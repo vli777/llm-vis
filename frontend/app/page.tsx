@@ -270,7 +270,7 @@ export default function Page() {
                 {chartViews.length > 0 && (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                     {chartViews.map((view) => (
-                      <div key={view.id} className="min-h-[320px]">
+                      <div key={view.id} className="h-[400px] lg:h-[460px]">
                         <RechartsCard
                           spec={view.spec}
                           explanation={view.explanation}
@@ -377,7 +377,7 @@ export default function Page() {
                       const view = syncViewsById.get(viewId);
                       if (!view) return null;
                       return (
-                        <div key={view.id} className="min-h-[320px]">
+                        <div key={view.id} className="h-[400px] lg:h-[460px]">
                           <RechartsCard
                             spec={view.spec}
                             explanation={view.explanation}

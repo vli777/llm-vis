@@ -26,9 +26,9 @@ export function VegaLiteChart({ spec }: { spec: any }) {
   return (
     <div
       className="theme-panel p-3"
-      style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}
+      style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", minHeight: 260 }}
     >
-      <div style={{ flex: 1, width: "100%", maxWidth: "100%", overflow: "hidden" }}>
+      <div style={{ flex: 1, width: "100%", maxWidth: "100%", overflow: "hidden", minHeight: 240 }}>
         {error ? (
           <div className="text-sm theme-accent">Chart error: {error}</div>
         ) : (

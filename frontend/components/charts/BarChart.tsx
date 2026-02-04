@@ -12,8 +12,16 @@ import {
 import type { ChartSpec } from "@/types/chart";
 
 const COLORS = [
-  "#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa",
-  "#fb923c", "#22d3ee", "#e879f9", "#4ade80", "#f87171",
+  "#636EFA",
+  "#EF553B",
+  "#00CC96",
+  "#AB63FA",
+  "#FFA15A",
+  "#19D3F3",
+  "#FF6692",
+  "#B6E880",
+  "#FF97FF",
+  "#FECB52",
 ];
 
 export default function BarChartView({ spec }: { spec: ChartSpec }) {
@@ -27,43 +35,47 @@ export default function BarChartView({ spec }: { spec: ChartSpec }) {
   const isHorizontal = spec.options.orientation === "horizontal";
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
+    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
       <ReBarChart
         data={data}
         layout={isHorizontal ? "vertical" : "horizontal"}
-        margin={{ top: 5, right: 20, left: 20, bottom: 40 }}
+        margin={{ top: 15, right: 20, left: 40, bottom: 90 }}
       >
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
         {isHorizontal ? (
           <>
             <YAxis
               dataKey={xField}
               type="category"
-              tick={{ fill: "#94a3b8", fontSize: 12 }}
+              tick={{ fill: "var(--color-muted)", fontSize: 12 }}
               width={120}
             />
             <XAxis
               type="number"
-              tick={{ fill: "#94a3b8", fontSize: 12 }}
+              tick={{ fill: "var(--color-muted)", fontSize: 12 }}
             />
           </>
         ) : (
           <>
             <XAxis
               dataKey={xField}
-              tick={{ fill: "#94a3b8", fontSize: 12 }}
+              tick={{ fill: "var(--color-muted)", fontSize: 12 }}
               angle={-35}
               textAnchor="end"
               height={60}
               interval={data.length > 20 ? Math.floor(data.length / 15) : 0}
             />
-            <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
+            <YAxis tick={{ fill: "var(--color-muted)", fontSize: 12 }} />
           </>
         )}
         <Tooltip
-          contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}
-          labelStyle={{ color: "#e2e8f0" }}
-          itemStyle={{ color: "#94a3b8" }}
+          contentStyle={{
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+          }}
+          labelStyle={{ color: "var(--color-text)" }}
+          itemStyle={{ color: "var(--color-text)" }}
         />
         <Bar dataKey={yField} radius={[4, 4, 0, 0]}>
           {data.map((_entry, index) => (

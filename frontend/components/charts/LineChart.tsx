@@ -12,7 +12,16 @@ import {
 import type { ChartSpec } from "@/types/chart";
 
 const COLORS = [
-  "#60a5fa", "#f472b6", "#34d399", "#fbbf24", "#a78bfa",
+  "#636EFA",
+  "#EF553B",
+  "#00CC96",
+  "#AB63FA",
+  "#FFA15A",
+  "#19D3F3",
+  "#FF6692",
+  "#B6E880",
+  "#FF97FF",
+  "#FECB52",
 ];
 
 export default function LineChartView({ spec }: { spec: ChartSpec }) {
@@ -32,25 +41,34 @@ export default function LineChartView({ spec }: { spec: ChartSpec }) {
   }
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <ReLineChart data={data} margin={{ top: 5, right: 20, left: 20, bottom: 40 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
+      <ReLineChart data={data} margin={{ top: 15, right: 20, left: 40, bottom: 110 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey={xField}
-          tick={{ fill: "#94a3b8", fontSize: 12 }}
+          tick={{ fill: "var(--color-muted)", fontSize: 12 }}
           angle={-35}
           textAnchor="end"
           height={60}
         />
-        <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
+        <YAxis tick={{ fill: "var(--color-muted)", fontSize: 12 }} />
         <Tooltip
-          contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}
-          labelStyle={{ color: "#e2e8f0" }}
-          itemStyle={{ color: "#94a3b8" }}
+          contentStyle={{
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+          }}
+          labelStyle={{ color: "var(--color-text)" }}
+          itemStyle={{ color: "var(--color-text)" }}
         />
         {groups.size > 0 ? (
           <>
-            <Legend wrapperStyle={{ color: "#94a3b8" }} />
+            <Legend
+              wrapperStyle={{ color: "var(--color-muted)", paddingTop: 16, fontSize: 10, opacity: 0.7 }}
+              verticalAlign="bottom"
+              align="center"
+              height={36}
+            />
             {[...groups].map((group, i) => (
               <Line
                 key={group}

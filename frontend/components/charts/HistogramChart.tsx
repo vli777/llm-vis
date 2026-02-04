@@ -15,25 +15,29 @@ export default function HistogramChart({ spec }: { spec: ChartSpec }) {
   if (!data.length) return <div className="text-sm theme-muted">No data</div>;
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <BarChart data={data} margin={{ top: 5, right: 20, left: 20, bottom: 40 }}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
+      <BarChart data={data} margin={{ top: 15, right: 20, left: 40, bottom: 90 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border)" />
         <XAxis
           dataKey="bin_label"
-          tick={{ fill: "#94a3b8", fontSize: 11 }}
+          tick={{ fill: "var(--color-muted)", fontSize: 11 }}
           angle={-35}
           textAnchor="end"
           height={60}
           interval={data.length > 15 ? Math.floor(data.length / 10) : 0}
         />
-        <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
+        <YAxis tick={{ fill: "var(--color-muted)", fontSize: 12 }} />
         <Tooltip
-          contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}
-          labelStyle={{ color: "#e2e8f0" }}
-          itemStyle={{ color: "#94a3b8" }}
+          contentStyle={{
+            background: "var(--color-surface)",
+            border: "1px solid var(--color-border)",
+            borderRadius: 8,
+          }}
+          labelStyle={{ color: "var(--color-text)" }}
+          itemStyle={{ color: "var(--color-text)" }}
           formatter={(value: any) => [value, "Count"]}
         />
-        <Bar dataKey="count" fill="#60a5fa" radius={[2, 2, 0, 0]} />
+        <Bar dataKey="count" fill="#636EFA" radius={[2, 2, 0, 0]} />
       </BarChart>
     </ResponsiveContainer>
   );
