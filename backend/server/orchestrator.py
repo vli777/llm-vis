@@ -36,6 +36,7 @@ from server.sse import (
     EVT_WARNING,
 )
 from skills.build_view import build_view
+from skills.classify import classify_columns
 from skills.narrate import plan_next_actions, summarize_step
 from skills.profile import build_profile
 from skills.recommend import generate_candidates, score_and_select
@@ -85,6 +86,7 @@ def run_eda_sync(
 
     # Step 1: Profile
     profile = build_profile(df, table_name)
+    profile = classify_columns(profile)
     report.profile = profile
     logger.info("Profile complete: %d columns, %d rows", len(profile.columns), profile.row_count)
 
@@ -226,6 +228,7 @@ async def run_eda_async(
 
     # Profile (CPU-bound)
     profile = await loop.run_in_executor(_executor, build_profile, df, table_name)
+    profile = await loop.run_in_executor(_executor, classify_columns, profile)
     report.profile = profile
     await channel.emit(EVT_PROGRESS, {
         "stage": "profile_complete",

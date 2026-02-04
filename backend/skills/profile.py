@@ -48,8 +48,11 @@ def detect_column_role(col_name: str, series: pd.Series, unique_ratio: float) ->
             return ColumnRole.measure
         if any(word in name_lower for word in ["count", "quantity", "number", "num", "qty"]):
             return ColumnRole.count
-        if "id" in name_lower and unique_ratio > 0.9:
-            return ColumnRole.identifier
+        # Identifier/code columns — numeric but not a real measure
+        if any(word in name_lower for word in ["id", "code", "key", "sku", "no"]):
+            if unique_ratio > 0.5:
+                return ColumnRole.identifier
+            return ColumnRole.categorical
         return ColumnRole.measure
 
     # String-encoded numerics (e.g. "$1.3B", "1,234.56")

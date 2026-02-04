@@ -189,7 +189,7 @@ def _relationship_candidates(profile: DataProfile) -> List[ViewPlan]:
                 encoding=ChartEncoding(
                     x=EncodingChannel(field=c1.name, type="nominal"),
                     y=EncodingChannel(field=c2.name, type="nominal"),
-                    color=EncodingChannel(field=c1.name, type="quantitative", aggregate="count"),
+                    color=EncodingChannel(field="count", type="quantitative", aggregate="count"),
                 ),
                 intent=f"{c1.name} vs {c2.name} co-occurrence",
                 fields_used=[c1.name, c2.name],
