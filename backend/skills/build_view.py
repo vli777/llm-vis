@@ -258,7 +258,10 @@ def _build_box(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
 
 
 def _build_table(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Summary table — return top rows for the fields used."""
+    """Summary table — df.describe()-style stats when tagged as summary."""
+    if "summary" in plan.tags:
+        return _build_describe_table(df)
+
     fields = plan.fields_used or list(df.columns[:10])
     resolved = [_resolve(f, df) for f in fields]
     cols = [c for c in resolved if c and c in df.columns]
@@ -267,6 +270,45 @@ def _build_table(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
 
     subset = df[cols].head(100)
     return df_to_records_safe(subset)
+
+
+def _build_describe_table(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Build df.describe()-style summary with skew and kurtosis."""
+    records: List[Dict[str, Any]] = []
+
+    for col in df.columns:
+        row: Dict[str, Any] = {"column": col, "dtype": str(df[col].dtype)}
+        total = len(df)
+        missing = int(df[col].isna().sum())
+        row["count"] = total - missing
+        row["missing"] = missing
+
+        # Numeric stats
+        num = smart_numeric_series(df[col])
+        valid = num.dropna()
+
+        if len(valid) >= 2:
+            row["mean"] = round(float(valid.mean()), 4)
+            row["std"] = round(float(valid.std()), 4)
+            row["min"] = round(float(valid.min()), 4)
+            row["25%"] = round(float(valid.quantile(0.25)), 4)
+            row["50%"] = round(float(valid.quantile(0.50)), 4)
+            row["75%"] = round(float(valid.quantile(0.75)), 4)
+            row["max"] = round(float(valid.max()), 4)
+            row["skew"] = round(float(valid.skew()), 4)
+            row["kurtosis"] = round(float(valid.kurtosis()), 4)
+        else:
+            # Categorical: show unique count and top value
+            nunique = df[col].nunique(dropna=True)
+            row["unique"] = nunique
+            top = df[col].value_counts().head(1)
+            if not top.empty:
+                row["top"] = str(top.index[0])[:60]
+                row["freq"] = int(top.iloc[0])
+
+        records.append(row)
+
+    return records
 
 
 def _build_heatmap(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
