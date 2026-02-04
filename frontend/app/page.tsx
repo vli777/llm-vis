@@ -5,6 +5,7 @@ import { PromptBar } from "../components/PromptBar";
 import { apiGetJSON, apiPostJSON, getSessionId } from "../lib/api";
 import TablesPanel from "@/components/TablesPanel";
 import RechartsCard from "@/components/charts/RechartsCard";
+import DataTable from "@/components/charts/DataTable";
 import EDATimeline from "@/components/EDATimeline";
 import { useSSE } from "@/lib/useSSE";
 import type { EDAReport, ViewResult } from "@/types/chart";
@@ -110,6 +111,11 @@ export default function Page() {
   const hasStreamedViews = sseState.views.size > 0;
   const showStreamingUI = hasStreamedViews || isStreaming || sseState.status === "complete";
 
+  // Separate table views (summary stats) from chart views
+  const allStreamedViews = Array.from(sseState.views.values());
+  const summaryViews = allStreamedViews.filter((v) => v.spec.chart_type === "table");
+  const chartViews = allStreamedViews.filter((v) => v.spec.chart_type !== "table");
+
   // Build views map for sync mode
   const syncViewsById = new Map<string, ViewResult>();
   if (report) {
@@ -173,10 +179,9 @@ export default function Page() {
 
       {/* SSE Streaming UI */}
       {showStreamingUI && (
-        <div className="mt-6">
-          {/* Timeline sidebar + views */}
+        <div className="mt-6 space-y-4">
+          {/* Top row: Timeline + Summary Statistics table */}
           <div className="flex gap-4">
-            {/* Timeline */}
             <div className="w-64 shrink-0">
               <EDATimeline
                 steps={sseState.steps}
@@ -185,27 +190,50 @@ export default function Page() {
               />
             </div>
 
-            {/* Streamed views */}
-            <div className="flex-1">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                {Array.from(sseState.views.values()).map((view) => (
-                  <div key={view.id} className="min-h-[320px]">
-                    <RechartsCard
-                      spec={view.spec}
-                      explanation={view.explanation}
-                    />
+            <div className="flex-1 min-w-0">
+              {summaryViews.length > 0 ? (
+                summaryViews.map((view) => (
+                  <div
+                    key={view.id}
+                    className="rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
+                  >
+                    {view.spec.title && (
+                      <h3 className="text-sm font-semibold text-slate-200 m-0">
+                        {view.spec.title}
+                      </h3>
+                    )}
+                    <div className="overflow-auto max-h-[600px]">
+                      <DataTable spec={view.spec} />
+                    </div>
+                    {view.explanation && (
+                      <p className="text-xs text-slate-500 mt-1 m-0">
+                        {view.explanation}
+                      </p>
+                    )}
                   </div>
-                ))}
-              </div>
-
-              {isStreaming && sseState.views.size === 0 && (
+                ))
+              ) : isStreaming ? (
                 <div className="flex items-center justify-center py-12 text-slate-500">
                   <Loader2 className="h-6 w-6 animate-spin mr-2" />
                   <span>Generating charts...</span>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
+
+          {/* Chart views grid (below the top row) */}
+          {chartViews.length > 0 && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {chartViews.map((view) => (
+                <div key={view.id} className="min-h-[320px]">
+                  <RechartsCard
+                    spec={view.spec}
+                    explanation={view.explanation}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -253,10 +281,37 @@ export default function Page() {
                 </div>
               )}
 
+              {/* Summary tables — full width, height-capped */}
+              {step.views.map((viewId) => {
+                const view = syncViewsById.get(viewId);
+                if (!view || view.spec.chart_type !== "table") return null;
+                return (
+                  <div
+                    key={view.id}
+                    className="mb-4 rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
+                  >
+                    {view.spec.title && (
+                      <h3 className="text-sm font-semibold text-slate-200 m-0">
+                        {view.spec.title}
+                      </h3>
+                    )}
+                    <div className="overflow-auto max-h-[600px]">
+                      <DataTable spec={view.spec} />
+                    </div>
+                    {view.explanation && (
+                      <p className="text-xs text-slate-500 mt-1 m-0">
+                        {view.explanation}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+
+              {/* Chart views — 2-col grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {step.views.map((viewId) => {
                   const view = syncViewsById.get(viewId);
-                  if (!view) return null;
+                  if (!view || view.spec.chart_type === "table") return null;
                   return (
                     <div key={view.id} className="min-h-[320px]">
                       <RechartsCard
