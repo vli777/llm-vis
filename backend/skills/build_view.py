@@ -3,6 +3,16 @@ View builder skill.
 
 Takes a ViewPlan + DataFrame → ViewResult with pre-aggregated data_inline.
 The frontend simply renders what it receives — no computation needed there.
+
+Chart data contract (data_inline):
+- bar: rows contain x field + y field (aggregated), plus optional color field.
+- line: rows contain x field + y field, optional color field for series.
+- scatter: rows contain x field + y field, optional color field.
+- hist: rows contain bin_label, bin_start, bin_end, count.
+- box: rows contain group, min, q1, median, q3, max, outliers.
+- heatmap: rows contain x field, y field, count.
+- pie: rows contain name field + value field (encoding.color/theta or inferred).
+- table: rows are raw/preview records with any fields.
 """
 
 from __future__ import annotations
