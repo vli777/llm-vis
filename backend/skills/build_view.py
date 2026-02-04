@@ -601,10 +601,10 @@ def _auto_explanation(plan: ViewPlan, data: List[Dict[str, Any]], df: pd.DataFra
                 if x_field and x_field in top_val:
                     parts.append(f"Top: {top_val.get(x_field)} ({top_val.get(y_field)}).")
 
-    if plan.chart_type == ChartType.scatter and plan.encoding.x and plan.encoding.y:
-        parts.append(f"Comparing {plan.encoding.x.field} vs {plan.encoding.y.field}.")
+    if plan.chart_type == ChartType.scatter:
+        parts.append("Selected scatter chart.")
 
     if not parts:
-        parts.append(f"Analysis of {fields}.")
+        parts.append(f"Selected {ct} chart.")
 
     return " ".join(parts)
