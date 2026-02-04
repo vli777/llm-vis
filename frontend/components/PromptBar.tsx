@@ -10,6 +10,7 @@ type Props = {
 
 export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
   const [text, setText] = useState("");
+  const [focused, setFocused] = useState(false);
   const composingRef = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -29,7 +30,9 @@ export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
   return (
     <form
       onSubmit={(e) => { e.preventDefault(); if (!composingRef.current) submit(); }}
-      className="theme-card flex items-center gap-2 px-3 py-2"
+      className={`theme-card flex items-center gap-2 px-3 py-2 transition-opacity ${
+        focused ? "opacity-100" : "opacity-60"
+      }`}
       aria-busy={disabled || undefined}
     >
       {disabled ? (
@@ -44,6 +47,8 @@ export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder || "Describe a chart"}
         disabled={disabled}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
         className="theme-input flex-1 bg-transparent py-2 outline-none disabled:opacity-60"

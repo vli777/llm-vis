@@ -73,3 +73,18 @@ body.theme-body {
 .theme-hover:hover {
   background: var(--color-surface);
 }
+
+.trace-fade {
+  opacity: 0.7;
+  animation: traceFade 8s ease-in-out forwards;
+}
+
+@keyframes traceFade {
+  0% { opacity: 0.7; max-height: 200px; }
+  70% { opacity: 0.35; }
+  100% { opacity: 0; max-height: 0; }
+}
+
+.trace-slot {
+  min-height: 18px;
+}

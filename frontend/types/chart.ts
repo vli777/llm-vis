@@ -70,6 +70,10 @@ export type ViewResult = {
 };
 
 export type StepType =
+  | "summary_stats"
+  | "analysis_intents"
+  | "intent_selection"
+  | "intent_views"
   | "quality_overview"
   | "relationships"
   | "outliers_segments"
@@ -81,6 +85,7 @@ export type StepResult = {
   views: string[]; // view IDs
   findings: string[];
   warnings: string[];
+  decision_trace?: string | null;
 };
 
 export type ColumnInfo = {

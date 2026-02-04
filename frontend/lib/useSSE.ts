@@ -6,6 +6,8 @@ export type StepSegment = {
   views: ViewResult[];
   headline: string;
   findings: string[];
+  decision_trace?: string | null;
+  step_index?: number | null;
   complete: boolean;
 };
 
@@ -101,6 +103,8 @@ export function useSSE() {
               views: [],
               headline: "",
               findings: [],
+              decision_trace: null,
+              step_index: data.step_index ?? null,
               complete: false,
             },
           ],
@@ -145,6 +149,10 @@ export function useSSE() {
             const last = { ...segments[segments.length - 1] };
             last.headline = data.headline || "";
             last.findings = data.findings || [];
+            last.decision_trace = data.decision_trace || null;
+            if (data.step_index !== undefined) {
+              last.step_index = data.step_index;
+            }
             last.complete = true;
             segments[segments.length - 1] = last;
           }

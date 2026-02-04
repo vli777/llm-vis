@@ -9,6 +9,10 @@ type Props = {
 };
 
 const STEP_LABELS: Record<string, string> = {
+  summary_stats: "Summary Statistics",
+  analysis_intents: "Analysis Intents",
+  intent_selection: "Intent Selection",
+  intent_views: "Intent-Driven Views",
   quality_overview: "Quality Overview",
   relationships: "Relationships",
   outliers_segments: "Outliers & Segments",

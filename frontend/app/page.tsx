@@ -12,6 +12,10 @@ import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 
 const STEP_LABELS: Record<string, string> = {
+  summary_stats: "Summary Statistics",
+  analysis_intents: "Analysis Intents",
+  intent_selection: "Intent Selection",
+  intent_views: "Intent-Driven Views",
   quality_overview: "Quality Overview",
   relationships: "Relationships",
   outliers_segments: "Outliers & Segments",
@@ -136,7 +140,6 @@ export default function Page() {
   const hasSegments = sseState.segments.length > 0;
   const showStreamingUI =
     hasSegments || isStreaming || sseState.status === "complete";
-  const analysisInsights = sseState.analysisInsights || report?.analysis_insights || null;
 
   // Build views map for sync mode
   const syncViewsById = new Map<string, ViewResult>();
@@ -147,76 +150,35 @@ export default function Page() {
   }
 
   return (
-    <div className="mx-auto max-w-[1200px] p-6">
+    <div className="mx-auto max-w-[1200px] p-6 pb-28">
       <h1 className="text-2xl font-semibold theme-muted mb-2 mt-0">
         AI Data Vis
       </h1>
 
       <UploadZone onUploaded={onUploaded} />
 
-      <div className="theme-card mt-4 p-3">
-        <div className="flex items-center gap-3">
-          <div className="flex-1">
-            <PromptBar
-              onSubmit={onPrompt}
-              placeholder="Ask a question about the data"
-              disabled={pending}
-            />
-          </div>
-        </div>
-
-        {/* Collapsible tables indicator */}
-        {tables.length > 0 && (
-          <button
-            onClick={() => setShowTables(!showTables)}
-            className="mt-2 flex items-center gap-1 text-xs theme-muted hover:text-black"
-          >
-            {showTables ? (
-              <ChevronDown className="h-3 w-3" />
-            ) : (
-              <ChevronRight className="h-3 w-3" />
-            )}
-            {tables.length} table{tables.length !== 1 ? "s" : ""} in session
-          </button>
-        )}
-        {showTables && (
-          <div className="mt-1 text-xs theme-muted pl-4">
-            {tables.map((t: any, i: number) => (
-              <div key={i}>
-                {t.name || t.table_name || `Table ${i + 1}`}
-                {t.rows != null && ` (${t.rows} rows)`}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {analysisInsights && analysisInsights.intents.length > 0 && (
-        <div className="mt-4 theme-panel p-4">
-          <h2 className="text-base font-semibold theme-muted m-0">Analysis Intents</h2>
-          {analysisInsights.warnings.length > 0 && (
-            <div className="mt-2 text-sm theme-accent">
-              {analysisInsights.warnings.map((w, i) => (
-                <div key={i}>{w}</div>
-              ))}
-            </div>
+      {/* Collapsible tables indicator */}
+      {tables.length > 0 && (
+        <button
+          onClick={() => setShowTables(!showTables)}
+          className="mt-2 flex items-center gap-1 text-xs theme-muted hover:text-black"
+        >
+          {showTables ? (
+            <ChevronDown className="h-3 w-3" />
+          ) : (
+            <ChevronRight className="h-3 w-3" />
           )}
-          <div className="mt-3 space-y-2 text-sm theme-muted">
-            {analysisInsights.intents
-              .slice()
-              .sort((a, b) => (a.priority || 0) - (b.priority || 0))
-              .map((intent, i) => (
-                <div key={i}>
-                  <div className="font-semibold">{intent.title}</div>
-                  {intent.rationale && <div className="text-xs theme-muted">{intent.rationale}</div>}
-                  {intent.fields?.length > 0 && (
-                    <div className="text-xs theme-muted">
-                      Fields: {intent.fields.join(", ")}
-                    </div>
-                  )}
-                </div>
-              ))}
-          </div>
+          {tables.length} table{tables.length !== 1 ? "s" : ""} in session
+        </button>
+      )}
+      {showTables && (
+        <div className="mt-1 text-xs theme-muted pl-4">
+          {tables.map((t: any, i: number) => (
+            <div key={i}>
+              {t.name || t.table_name || `Table ${i + 1}`}
+              {t.rows != null && ` (${t.rows} rows)`}
+            </div>
+          ))}
         </div>
       )}
 
@@ -226,6 +188,16 @@ export default function Page() {
           {error}
         </div>
       )}
+
+      <div className="fixed bottom-4 left-0 right-0 px-6 z-50 pointer-events-none">
+        <div className="mx-auto max-w-[1200px] pointer-events-auto">
+          <PromptBar
+            onSubmit={onPrompt}
+            placeholder="Ask a question about the data"
+            disabled={pending}
+          />
+        </div>
+      </div>
 
       {/* ============================================================
           SSE Streaming UI — Notebook-style sequential layout
@@ -244,7 +216,10 @@ export default function Page() {
           )}
 
           {/* Step segments — rendered sequentially like a notebook */}
-          {sseState.segments.map((segment, si) => {
+          {sseState.segments
+            .slice()
+            .sort((a, b) => (a.step_index ?? 0) - (b.step_index ?? 0))
+            .map((segment, si) => {
             const tableViews = segment.views.filter(
               (v) => v.spec.chart_type === "table"
             );
@@ -266,6 +241,11 @@ export default function Page() {
                   </h2>
                   {!segment.complete && (
                     <Loader2 className="h-4 w-4 animate-spin theme-primary" />
+                  )}
+                </div>
+                <div className="trace-slot text-xs theme-muted">
+                  {segment.complete && segment.decision_trace && (
+                    <span className="trace-fade">{segment.decision_trace}</span>
                   )}
                 </div>
 
@@ -303,9 +283,6 @@ export default function Page() {
                 {/* Findings / Insights */}
                 {segment.complete && segment.findings.length > 0 && (
                   <div className="mt-3 p-3 theme-panel">
-                    <h4 className="text-sm font-semibold theme-muted mb-1.5">
-                      Insights
-                    </h4>
                     <ul className="text-sm theme-muted list-disc list-inside space-y-1">
                       {segment.findings.map((f, fi) => (
                         <li key={fi}>{f}</li>
@@ -358,6 +335,11 @@ export default function Page() {
                     {step.headline}
                   </h2>
                 </div>
+                <div className="trace-slot text-xs theme-muted">
+                  {step.decision_trace && (
+                    <span className="trace-fade">{step.decision_trace}</span>
+                  )}
+                </div>
 
                 {step.warnings.length > 0 && (
                   <div className="mb-2 text-xs theme-accent">
@@ -409,9 +391,6 @@ export default function Page() {
                 {/* Findings */}
                 {step.findings.length > 0 && (
                   <div className="mt-3 p-3 theme-panel">
-                    <h4 className="text-sm font-semibold theme-muted mb-1.5">
-                      Insights
-                    </h4>
                     <ul className="text-sm theme-muted list-disc list-inside space-y-1">
                       {step.findings.map((f, fi) => (
                         <li key={fi}>{f}</li>
@@ -419,6 +398,7 @@ export default function Page() {
                     </ul>
                   </div>
                 )}
+
               </div>
             );
           })}
