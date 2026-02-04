@@ -40,6 +40,7 @@ export type ChartOptions = {
   tooltip_fields?: string[];
   orientation?: string;
   stacked?: boolean;
+  markers?: { value: number; label?: string }[];
 };
 
 export type ChartSpec = {
@@ -72,7 +73,6 @@ export type ViewResult = {
 export type StepType =
   | "summary_stats"
   | "analysis_intents"
-  | "intent_selection"
   | "intent_views"
   | "quality_overview"
   | "relationships"

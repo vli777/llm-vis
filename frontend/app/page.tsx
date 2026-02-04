@@ -14,7 +14,6 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
 const STEP_LABELS: Record<string, string> = {
   summary_stats: "Summary Statistics",
   analysis_intents: "Analysis Intents",
-  intent_selection: "Intent Selection",
   intent_views: "Intent-Driven Views",
   quality_overview: "Quality Overview",
   relationships: "Relationships",

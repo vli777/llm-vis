@@ -7,12 +7,21 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
+  ReferenceLine,
 } from "recharts";
 import type { ChartSpec } from "@/types/chart";
 
 export default function HistogramChart({ spec }: { spec: ChartSpec }) {
   const data = spec.data_inline || [];
   if (!data.length) return <div className="text-sm theme-muted">No data</div>;
+
+  const valueKey =
+    data[0]?.percent !== undefined
+      ? "percent"
+      : data[0]?.count !== undefined
+        ? "count"
+        : spec.encoding.y?.field || "count";
+  const markers = spec.options?.markers || [];
 
   return (
     <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={220}>
@@ -35,9 +44,21 @@ export default function HistogramChart({ spec }: { spec: ChartSpec }) {
           }}
           labelStyle={{ color: "var(--color-text)" }}
           itemStyle={{ color: "var(--color-text)" }}
-          formatter={(value: any) => [value, "Count"]}
+          formatter={(value: any) => [
+            value,
+            valueKey === "percent" ? "Percent" : "Count",
+          ]}
         />
-        <Bar dataKey="count" fill="#636EFA" radius={[2, 2, 0, 0]} />
+        <Bar dataKey={valueKey} fill="#636EFA" radius={[2, 2, 0, 0]} />
+        {markers.map((m, i) => (
+          <ReferenceLine
+            key={i}
+            x={m.value}
+            stroke="#EF553B"
+            strokeDasharray="3 3"
+            label={{ value: m.label, position: "top", fill: "#EF553B", fontSize: 10 }}
+          />
+        ))}
       </BarChart>
     </ResponsiveContainer>
   );

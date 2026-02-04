@@ -38,7 +38,10 @@ Return a JSON object with:
 
 Rules:
 - Do NOT mention charts, chart types, bins, or number of data points.
-- Focus on dataset insights only (ranges, trends, top categories, relationships).
+- Do NOT restate schema or generic dataset descriptions.
+- Avoid planning language like "analysis priorities" or "next".
+- Focus on concrete insights only (ranges, trends, top categories, relationships).
+- Each finding should include at least one numeric value.
 - Keep it factual and grounded in values shown.
 
 Return ONLY valid JSON. No prose, no code fences."""
@@ -86,6 +89,9 @@ def summarize_step(
                 "title": v.spec.title,
                 "fields": v.plan.fields_used,
             }
+            stats = _view_stats(v)
+            if stats:
+                summary["stats"] = stats
             view_summaries.append(summary)
 
         payload = {
@@ -184,6 +190,70 @@ def _fallback_summary(
     headline = f"{step.step_type.value.replace('_', ' ').title()}: analyzed {len(views)} views across {profile.row_count} rows"
 
     return {"headline": headline, "findings": findings}
+
+
+def _view_stats(view: ViewResult) -> Dict[str, Any]:
+    """Compute light-weight stats from view data for LLM grounding."""
+    data = view.data_inline or []
+    if not data:
+        return {}
+
+    ct = view.spec.chart_type.value
+    stats: Dict[str, Any] = {"chart_type": ct}
+
+    if ct in {"bar", "hist"}:
+        y = view.plan.encoding.y.field if view.plan.encoding.y else None
+        if y and y in data[0]:
+            vals = [d.get(y) for d in data if isinstance(d.get(y), (int, float))]
+            if vals:
+                stats.update({
+                    "min": min(vals),
+                    "max": max(vals),
+                    "mean": sum(vals) / len(vals),
+                })
+        if ct == "bar":
+            x = view.plan.encoding.x.field if view.plan.encoding.x else None
+            if x and x in data[0]:
+                stats["top"] = {"label": data[0].get(x), "value": data[0].get(y)}
+
+    if ct == "line":
+        x = view.plan.encoding.x.field if view.plan.encoding.x else None
+        y = view.plan.encoding.y.field if view.plan.encoding.y else None
+        if x and y and x in data[0] and y in data[0]:
+            vals = [d.get(y) for d in data if isinstance(d.get(y), (int, float))]
+            if vals:
+                stats["start"] = vals[0]
+                stats["end"] = vals[-1]
+                stats["delta"] = vals[-1] - vals[0]
+
+    if ct == "scatter":
+        x = view.plan.encoding.x.field if view.plan.encoding.x else None
+        y = view.plan.encoding.y.field if view.plan.encoding.y else None
+        if x and y and x in data[0] and y in data[0]:
+            xs = [d.get(x) for d in data if isinstance(d.get(x), (int, float))]
+            ys = [d.get(y) for d in data if isinstance(d.get(y), (int, float))]
+            n = min(len(xs), len(ys))
+            if n >= 3:
+                import numpy as np
+                corr = float(np.corrcoef(xs[:n], ys[:n])[0, 1])
+                stats["corr"] = round(corr, 4)
+
+    if ct == "pie":
+        theta = view.plan.encoding.theta.field if view.plan.encoding.theta else None
+        if theta and theta in data[0]:
+            vals = [d.get(theta) for d in data if isinstance(d.get(theta), (int, float))]
+            if vals:
+                stats["total"] = sum(vals)
+                stats["top_share"] = max(vals) / max(1.0, sum(vals))
+
+    if ct == "heatmap":
+        if "count" in data[0]:
+            vals = [d.get("count") for d in data if isinstance(d.get("count"), (int, float))]
+            if vals:
+                stats["max"] = max(vals)
+                stats["min"] = min(vals)
+
+    return stats
 
 
 def _fallback_plan(steps_done: List[StepResult]) -> DecisionRecord:

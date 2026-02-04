@@ -90,6 +90,7 @@ class ChartOptions(BaseModel):
     tooltip_fields: Optional[List[str]] = None
     orientation: Optional[str] = None     # horizontal / vertical
     stacked: Optional[bool] = None
+    markers: Optional[List[Dict[str, Any]]] = None
 
 
 class ChartSpec(BaseModel):
@@ -130,7 +131,6 @@ class ViewResult(BaseModel):
 class StepType(str, Enum):
     summary_stats = "summary_stats"
     analysis_intents = "analysis_intents"
-    intent_selection = "intent_selection"
     intent_views = "intent_views"
     quality_overview = "quality_overview"
     relationships = "relationships"

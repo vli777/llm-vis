@@ -411,7 +411,7 @@ def generate_candidates(
     step_type: StepType,
     *,
     query: str = "",
-    intents: Optional[List[str]] = None,
+    intents: Optional[List[Dict[str, object]]] = None,
 ) -> List[ViewPlan]:
     """Generate candidate ViewPlans for a given analysis step."""
     if step_type == StepType.query_driven:
@@ -432,18 +432,41 @@ def generate_candidates(
     return candidates
 
 
-def _intent_filter(candidates: List[ViewPlan], intents: List[str]) -> List[ViewPlan]:
-    intent_text = " ".join(intents).lower()
+def _intent_filter(
+    candidates: List[ViewPlan],
+    intents: List[Dict[str, object]],
+) -> List[ViewPlan]:
     filtered: List[ViewPlan] = []
-    for plan in candidates:
-        intent_match = any(
-            field.lower() in intent_text or field.lower() in (plan.intent or "").lower()
-            for field in plan.fields_used
-        )
-        tag_match = any(tag in intent_text for tag in plan.tags)
-        if intent_match or tag_match:
-            filtered.append(plan)
-    return filtered
+    for intent in intents:
+        title = str(intent.get("title") or "").lower()
+        fields = [str(f).lower() for f in (intent.get("fields") or [])]
+
+        for plan in candidates:
+            # If intent has explicit fields, require field overlap
+            if fields:
+                if any(f in [p.lower() for p in plan.fields_used] for f in fields):
+                    filtered.append(plan)
+                continue
+
+            # Otherwise use token overlap between intent title and plan intent
+            plan_text = (plan.intent or "").lower()
+            title_tokens = set(re.findall(r"[a-z0-9]+", title))
+            plan_tokens = set(re.findall(r"[a-z0-9]+", plan_text))
+            if title_tokens and plan_tokens:
+                overlap = len(title_tokens & plan_tokens) / max(1, len(title_tokens))
+                if overlap >= 0.4:
+                    filtered.append(plan)
+
+    # Deduplicate while preserving order
+    seen: Set[str] = set()
+    deduped: List[ViewPlan] = []
+    for p in filtered:
+        key = _plan_key(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+    return deduped
 
 
 def score_and_select(

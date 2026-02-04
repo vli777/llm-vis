@@ -42,7 +42,7 @@ from skills.classify import classify_columns
 from skills.narrate import plan_next_actions, summarize_step
 from skills.profile import build_profile
 from skills.recommend import generate_candidates, score_and_select
-from skills.intent import infer_analysis_intents, select_intent
+from skills.intent import infer_analysis_intents
 from skills.summary import summarize_dataset, build_summary_stats_view
 from skills.validate import deterministic_fallback, validate_plan, validate_view
 
@@ -52,7 +52,6 @@ logger = logging.getLogger("uvicorn.error")
 DEFAULT_POLICY: List[StepType] = [
     StepType.summary_stats,
     StepType.analysis_intents,
-    StepType.intent_selection,
     StepType.intent_views,
 ]
 
@@ -135,19 +134,16 @@ def run_eda_sync(
     all_view_results: List[ViewResult] = []
     total_views = 0
 
-    # Build the step pipeline: insert query_driven after intent_selection
+    # Build the step pipeline (query handled as first intent if provided)
     pipeline = list(DEFAULT_POLICY)
-    if query:
-        try:
-            idx = pipeline.index(StepType.intent_selection)
-            pipeline.insert(idx + 1, StepType.query_driven)
-        except ValueError:
-            pipeline.append(StepType.query_driven)
 
     intent_texts: List[str] = []
 
+    step_idx = 0
+    intent_queue: List[dict] = []
+
     # Step 2: Run each analysis step
-    for step_idx, step_type in enumerate(pipeline):
+    for step_type in pipeline:
         if total_views >= budget and step_type not in (
             StepType.summary_stats, StepType.analysis_intents
         ):
@@ -164,6 +160,7 @@ def run_eda_sync(
                 findings=summary["findings"],
             )
             report.steps.append(step_result)
+            step_idx += 1
             continue
 
         if step_type == StepType.analysis_intents:
@@ -172,122 +169,107 @@ def run_eda_sync(
                     profile, context=_build_llm_context(report)
                 )
             intents = report.analysis_insights.intents if report.analysis_insights else []
-            intent_texts = [i.title for i in intents] + [f for i in intents for f in i.fields]
+            intent_queue = [
+                {"title": i.title, "fields": i.fields or []}
+                for i in intents
+            ]
+            if query:
+                intent_queue = [{"title": f"Query: {query}", "fields": []}] + intent_queue
             step_result = StepResult(
                 step_type=step_type,
                 headline="Analysis intents derived from dataset structure",
                 findings=[i.title for i in intents],
             )
             report.steps.append(step_result)
+            step_idx += 1
             continue
 
-        if step_type == StepType.intent_selection:
-            if report.analysis_insights is None:
-                report.analysis_insights = infer_analysis_intents(
-                    profile, context=_build_llm_context(report)
+        if step_type == StepType.intent_views:
+            if not intent_queue:
+                continue
+            for idx, intent in enumerate(intent_queue, start=1):
+                intent_payload = [{"title": intent["title"], "fields": intent["fields"]}]
+                step_budget = min(STEP_BUDGET, budget - total_views)
+                if step_budget <= 0:
+                    break
+
+                logger.info("Step: intent_views %d/%d (budget=%d)", idx, len(intent_queue), step_budget)
+
+                candidates = generate_candidates(
+                    profile,
+                    step_type,
+                    query=query or "",
+                    intents=intent_payload,
                 )
-            selection = select_intent(
-                report.analysis_insights, query=query or "", context=_build_llm_context(report)
-            )
-            selected_title = selection.get("selected_title") or "Selected intent"
-            selected_fields = selection.get("fields") or []
-            intent_texts = [selected_title] + selected_fields
-            step_result = StepResult(
-                step_type=step_type,
-                headline="Selected next analysis intent",
-                findings=[selected_title],
-                decision_trace=selection.get("rationale") or None,
-            )
-            report.steps.append(step_result)
+                logger.info("  Generated %d candidates", len(candidates))
+
+                selected = score_and_select(candidates, views_done, budget=step_budget)
+                logger.info("  Selected %d views", len(selected))
+
+                step_views: List[str] = []
+                step_findings: List[str] = []
+                step_warnings: List[str] = []
+                step_view_results: List[ViewResult] = []
+
+                for plan in selected:
+                    is_valid, plan_warnings = validate_plan(plan, profile)
+                    step_warnings.extend(plan_warnings)
+
+                    if not is_valid:
+                        logger.warning("  Plan invalid: %s — attempting fallback", plan_warnings)
+                        plan = deterministic_fallback(plan, profile)
+                        is_valid, plan_warnings = validate_plan(plan, profile)
+                        if not is_valid:
+                            logger.warning("  Fallback also invalid, skipping: %s", plan_warnings)
+                            continue
+
+                    try:
+                        view = build_view(plan, df)
+                    except Exception as e:
+                        logger.warning("  Build failed for '%s': %s", plan.intent, e)
+                        step_warnings.append(f"Build failed: {e}")
+                        continue
+
+                    view_valid, view_warnings = validate_view(view)
+                    step_warnings.extend(view_warnings)
+
+                    if not view_valid:
+                        logger.warning("  View invalid: %s", view_warnings)
+                        continue
+
+                    append_view(report.run_id, view)
+                    step_views.append(view.id)
+                    step_view_results.append(view)
+                    views_done.append(plan)
+                    all_view_results.append(view)
+                    total_views += 1
+
+                    step_findings.append(view.explanation)
+                    logger.info("  View built: %s (%s, %d rows)",
+                                 view.spec.title, view.spec.chart_type.value, len(view.data_inline))
+
+                step_result = StepResult(
+                    step_type=step_type,
+                    headline=f"Intent {idx}/{len(intent_queue)}: {intent['title']}",
+                    views=step_views,
+                    findings=step_findings,
+                    warnings=step_warnings,
+                )
+
+                if step_view_results:
+                    narration = summarize_step(
+                        profile, step_result, step_view_results, context=_build_llm_context(report)
+                    )
+                    step_result.headline = narration.get("headline", step_result.headline)
+                    step_result.findings = narration.get("findings", step_result.findings)
+
+                report.steps.append(step_result)
+                step_idx += 1
             continue
 
-        step_budget = min(STEP_BUDGET, budget - total_views)
-        logger.info("Step: %s (budget=%d)", step_type.value, step_budget)
-
-        # Generate candidates
-        candidates = generate_candidates(
-            profile,
-            step_type,
-            query=query or "",
-            intents=intent_texts,
-        )
-        logger.info("  Generated %d candidates", len(candidates))
-
-        # Select best
-        selected = score_and_select(candidates, views_done, budget=step_budget)
-        logger.info("  Selected %d views", len(selected))
-
-        step_views: List[str] = []
-        step_findings: List[str] = []
-        step_warnings: List[str] = []
-        step_view_results: List[ViewResult] = []
-
-        for plan in selected:
-            # Validate plan
-            is_valid, plan_warnings = validate_plan(plan, profile)
-            step_warnings.extend(plan_warnings)
-
-            if not is_valid:
-                logger.warning("  Plan invalid: %s — attempting fallback", plan_warnings)
-                plan = deterministic_fallback(plan, profile)
-                is_valid, plan_warnings = validate_plan(plan, profile)
-                if not is_valid:
-                    logger.warning("  Fallback also invalid, skipping: %s", plan_warnings)
-                    continue
-
-            # Build view
-            try:
-                view = build_view(plan, df)
-            except Exception as e:
-                logger.warning("  Build failed for '%s': %s", plan.intent, e)
-                step_warnings.append(f"Build failed: {e}")
-                continue
-
-            # Validate view
-            view_valid, view_warnings = validate_view(view)
-            step_warnings.extend(view_warnings)
-
-            if not view_valid:
-                logger.warning("  View invalid: %s", view_warnings)
-                continue
-
-            # Accept the view
-            append_view(report.run_id, view)
-            step_views.append(view.id)
-            step_view_results.append(view)
-            views_done.append(plan)
-            all_view_results.append(view)
-            total_views += 1
-
-            step_findings.append(view.explanation)
-            logger.info("  View built: %s (%s, %d rows)",
-                         view.spec.title, view.spec.chart_type.value, len(view.data_inline))
-
-        # Record step result
-        step_result = StepResult(
-            step_type=step_type,
-            headline=f"{step_type.value.replace('_', ' ').title()}: {len(step_views)} views",
-            views=step_views,
-            findings=step_findings,
-            warnings=step_warnings,
-        )
-
-        # Narrate: enrich headline/findings via LLM (falls back to deterministic)
-        if step_view_results:
-            narration = summarize_step(
-                profile, step_result, step_view_results, context=_build_llm_context(report)
-            )
-            step_result.headline = narration.get("headline", step_result.headline)
-            step_result.findings = narration.get("findings", step_result.findings)
-
-        report.steps.append(step_result)
-
-        # Record decision in timeline
-        decision = plan_next_actions(
-            profile, report.steps, all_view_results, budget - total_views,
-            context=_build_llm_context(report),
-        )
-        report.timeline.append(decision)
+        # Skip other step types in this intent-driven flow
+        step_idx += 1
+        continue
 
     logger.info("EDA run %s complete: %d views across %d steps",
                 report.run_id, total_views, len(report.steps))
@@ -441,31 +423,24 @@ async def run_eda_async(
     all_view_results: List[ViewResult] = []
     total_views = 0
 
-    # Build the step pipeline: insert query_driven after intent_selection
+    # Build the step pipeline (query handled as first intent if provided)
     pipeline = list(DEFAULT_POLICY)
-    if query:
-        try:
-            idx = pipeline.index(StepType.intent_selection)
-            pipeline.insert(idx + 1, StepType.query_driven)
-        except ValueError:
-            pipeline.append(StepType.query_driven)
 
-    intent_texts: List[str] = []
+    step_idx = 0
+    intent_queue: List[dict] = []
 
-    for step_idx, step_type in enumerate(pipeline):
+    for step_type in pipeline:
         if total_views >= budget and step_type not in (
             StepType.summary_stats, StepType.analysis_intents
         ):
             break
 
-        step_budget = min(STEP_BUDGET, budget - total_views)
-        await channel.emit(EVT_STEP_STARTED, {
-            "step_type": step_type.value,
-            "budget": step_budget,
-            "step_index": step_idx,
-        })
-
         if step_type == StepType.summary_stats:
+            await channel.emit(EVT_STEP_STARTED, {
+                "step_type": step_type.value,
+                "budget": 0,
+                "step_index": step_idx,
+            })
             summary = summarize_dataset(profile)
             summary_view = await loop.run_in_executor(_executor, build_summary_stats_view, df, profile)
             append_view(report.run_id, summary_view)
@@ -485,15 +460,26 @@ async def run_eda_async(
                 "findings": step_result.findings,
                 "step_index": step_idx,
             })
+            step_idx += 1
             continue
 
         if step_type == StepType.analysis_intents:
+            await channel.emit(EVT_STEP_STARTED, {
+                "step_type": step_type.value,
+                "budget": 0,
+                "step_index": step_idx,
+            })
             if report.analysis_insights is None:
                 report.analysis_insights = await loop.run_in_executor(
                     _executor, lambda: infer_analysis_intents(profile, context=_build_llm_context(report))
                 )
             intents = report.analysis_insights.intents if report.analysis_insights else []
-            intent_texts = [i.title for i in intents] + [f for i in intents for f in i.fields]
+            intent_queue = [
+                {"title": i.title, "fields": i.fields or []}
+                for i in intents
+            ]
+            if query:
+                intent_queue = [{"title": f"Query: {query}", "fields": []}] + intent_queue
             step_result = StepResult(
                 step_type=step_type,
                 headline="Analysis intents derived from dataset structure",
@@ -508,137 +494,108 @@ async def run_eda_async(
                 "headline": step_result.headline,
                 "view_count": 0,
                 "findings": step_result.findings,
-            })
-            continue
-
-        if step_type == StepType.intent_selection:
-            if report.analysis_insights is None:
-                report.analysis_insights = await loop.run_in_executor(
-                    _executor, lambda: infer_analysis_intents(profile, context=_build_llm_context(report))
-                )
-            selection = await loop.run_in_executor(
-                _executor, lambda: select_intent(
-                    report.analysis_insights, query=query or "", context=_build_llm_context(report)
-                )
-            )
-            selected_title = selection.get("selected_title") or "Selected intent"
-            selected_fields = selection.get("fields") or []
-            intent_texts = [selected_title] + selected_fields
-            step_result = StepResult(
-                step_type=step_type,
-                headline="Selected next analysis intent",
-                views=[],
-                findings=[selected_title],
-                warnings=[],
-                decision_trace=selection.get("rationale") or None,
-            )
-            report.steps.append(step_result)
-            await channel.emit(EVT_STEP_SUMMARY, {
-                "step_type": step_type.value,
-                "headline": step_result.headline,
-                "view_count": 0,
-                "findings": step_result.findings,
-                "decision_trace": step_result.decision_trace,
                 "step_index": step_idx,
             })
+            step_idx += 1
             continue
 
-        candidates = generate_candidates(
-            profile,
-            step_type,
-            query=query or "",
-            intents=intent_texts,
-        )
-        selected = score_and_select(candidates, views_done, budget=step_budget)
-
-        step_views: List[str] = []
-        step_findings: List[str] = []
-        step_warnings: List[str] = []
-        step_view_results: List[ViewResult] = []
-
-        for plan in selected:
-            is_valid, plan_warnings = validate_plan(plan, profile)
-            step_warnings.extend(plan_warnings)
-
-            if not is_valid:
-                plan = deterministic_fallback(plan, profile)
-                is_valid, plan_warnings = validate_plan(plan, profile)
-                if not is_valid:
-                    for w in plan_warnings:
-                        await channel.emit(EVT_WARNING, {"message": w})
-                    continue
-
-            await channel.emit(EVT_VIEW_PLANNED, {
-                "intent": plan.intent,
-                "chart_type": plan.chart_type.value,
-            })
-
-            # Build view (CPU-bound — run in executor)
-            try:
-                view = await loop.run_in_executor(_executor, build_view, plan, df)
-            except Exception as e:
-                logger.warning("Build failed: %s", e)
-                await channel.emit(EVT_WARNING, {"message": f"Build failed: {e}"})
+        if step_type == StepType.intent_views:
+            if not intent_queue:
                 continue
+            for idx, intent in enumerate(intent_queue, start=1):
+                intent_payload = [{"title": intent["title"], "fields": intent["fields"]}]
+                step_budget = min(STEP_BUDGET, budget - total_views)
+                if step_budget <= 0:
+                    break
 
-            view_valid, view_warnings = validate_view(view)
-            step_warnings.extend(view_warnings)
-            if not view_valid:
-                for w in view_warnings:
-                    await channel.emit(EVT_WARNING, {"message": w})
-                continue
+                await channel.emit(EVT_STEP_STARTED, {
+                    "step_type": step_type.value,
+                    "budget": step_budget,
+                    "step_index": step_idx,
+                })
 
-            append_view(report.run_id, view)
-            step_views.append(view.id)
-            step_view_results.append(view)
-            views_done.append(plan)
-            all_view_results.append(view)
-            total_views += 1
+                candidates = generate_candidates(
+                    profile,
+                    step_type,
+                    query=query or "",
+                    intents=intent_payload,
+                )
+                selected = score_and_select(candidates, views_done, budget=step_budget)
 
-            step_findings.append(view.explanation)
+                step_views: List[str] = []
+                step_findings: List[str] = []
+                step_warnings: List[str] = []
+                step_view_results: List[ViewResult] = []
 
-            # Stream the view to the client
-            await channel.emit(EVT_VIEW_READY, view.model_dump())
+                for plan in selected:
+                    is_valid, plan_warnings = validate_plan(plan, profile)
+                    step_warnings.extend(plan_warnings)
 
-        step_result = StepResult(
-            step_type=step_type,
-            headline=f"{step_type.value.replace('_', ' ').title()}: {len(step_views)} views",
-            views=step_views,
-            findings=step_findings,
-            warnings=step_warnings,
-        )
+                    if not is_valid:
+                        plan = deterministic_fallback(plan, profile)
+                        is_valid, plan_warnings = validate_plan(plan, profile)
+                        if not is_valid:
+                            for w in plan_warnings:
+                                await channel.emit(EVT_WARNING, {"message": w})
+                            continue
 
-        # Narrate: enrich headline/findings (runs in executor to avoid blocking SSE)
-        if step_view_results:
-            narration = await loop.run_in_executor(
-                _executor, lambda: summarize_step(
-                    profile, step_result, step_view_results, context=_build_llm_context(report)
-                ),
-            )
-            step_result.headline = narration.get("headline", step_result.headline)
-            step_result.findings = narration.get("findings", step_result.findings)
+                    await channel.emit(EVT_VIEW_PLANNED, {
+                        "intent": plan.intent,
+                        "chart_type": plan.chart_type.value,
+                    })
 
-        if intent_texts:
-            trace = f"Decision trace: matched intents {', '.join(intent_texts[:3])}."
-            step_result.findings = [trace] + step_result.findings
+                    try:
+                        view = await loop.run_in_executor(_executor, build_view, plan, df)
+                    except Exception as e:
+                        logger.warning("Build failed: %s", e)
+                        await channel.emit(EVT_WARNING, {"message": f"Build failed: {e}"})
+                        continue
 
-        report.steps.append(step_result)
+                    view_valid, view_warnings = validate_view(view)
+                    step_warnings.extend(view_warnings)
+                    if not view_valid:
+                        for w in view_warnings:
+                            await channel.emit(EVT_WARNING, {"message": w})
+                        continue
 
-        # Record decision in timeline
-        decision = plan_next_actions(
-            profile, report.steps, all_view_results, budget - total_views,
-            context=_build_llm_context(report),
-        )
-        report.timeline.append(decision)
+                    append_view(report.run_id, view)
+                    step_views.append(view.id)
+                    step_view_results.append(view)
+                    views_done.append(plan)
+                    all_view_results.append(view)
+                    total_views += 1
 
-        await channel.emit(EVT_STEP_SUMMARY, {
-            "step_type": step_type.value,
-            "headline": step_result.headline,
-            "view_count": len(step_views),
-            "findings": step_result.findings,
-            "decision_trace": step_result.decision_trace,
-            "step_index": step_idx,
-        })
+                    step_findings.append(view.explanation)
+                    await channel.emit(EVT_VIEW_READY, view.model_dump())
+
+                step_result = StepResult(
+                    step_type=step_type,
+                    headline=f"Intent {idx}/{len(intent_queue)}: {intent['title']}",
+                    views=step_views,
+                    findings=step_findings,
+                    warnings=step_warnings,
+                )
+
+                if step_view_results:
+                    narration = await loop.run_in_executor(
+                        _executor, lambda: summarize_step(
+                            profile, step_result, step_view_results, context=_build_llm_context(report)
+                        ),
+                    )
+                    step_result.headline = narration.get("headline", step_result.headline)
+                    step_result.findings = narration.get("findings", step_result.findings)
+
+                report.steps.append(step_result)
+                await channel.emit(EVT_STEP_SUMMARY, {
+                    "step_type": step_type.value,
+                    "headline": step_result.headline,
+                    "view_count": len(step_views),
+                    "findings": step_result.findings,
+                    "decision_trace": step_result.decision_trace,
+                    "step_index": step_idx,
+                })
+                step_idx += 1
+            continue
 
     save_run(report)
 

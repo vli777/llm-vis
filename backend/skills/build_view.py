@@ -305,7 +305,7 @@ def _build_scatter(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
 
 
 def _build_histogram(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
-    """Histogram — bin numeric data."""
+    """Histogram — bin numeric data into percentiles/deciles."""
     x_enc = plan.encoding.x
     if not x_enc:
         return []
@@ -318,9 +318,12 @@ def _build_histogram(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
     if series.empty:
         return []
 
+    total = len(series)
+    if total == 0:
+        return []
+
     bin_count = plan.options.bin_count or 20
     counts, edges = np.histogram(series, bins=bin_count)
-
     records = []
     for i, count in enumerate(counts):
         records.append({
@@ -328,7 +331,22 @@ def _build_histogram(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
             "bin_end": float(edges[i + 1]),
             "bin_label": f"{edges[i]:.4g}-{edges[i+1]:.4g}",
             "count": int(count),
+            "percent": round(100.0 * count / total, 2),
         })
+
+    # Add percentile markers (used by frontend for reference lines)
+    try:
+        percentiles = [10, 25, 50, 75, 90]
+        markers = []
+        for p in percentiles:
+            markers.append({
+                "value": float(np.percentile(series, p)),
+                "label": f"P{p}",
+            })
+        if markers:
+            plan.options.markers = markers
+    except Exception:
+        pass
 
     return records
 
@@ -599,12 +617,18 @@ def _auto_explanation(plan: ViewPlan, data: List[Dict[str, Any]], df: pd.DataFra
                 top_val = data[0]
                 x_field = plan.encoding.x.field if plan.encoding.x else None
                 if x_field and x_field in top_val:
-                    parts.append(f"Top: {top_val.get(x_field)} ({top_val.get(y_field)}).")
+                    parts.append(f"To compare categories and identify leaders (top: {top_val.get(x_field)}).")
 
-    if plan.chart_type == ChartType.scatter:
-        parts.append("Selected scatter chart.")
+    if plan.chart_type == ChartType.scatter and plan.encoding.x and plan.encoding.y:
+        parts.append(f"To assess relationship between {plan.encoding.x.field} and {plan.encoding.y.field}.")
+
+    if plan.chart_type == ChartType.line and plan.encoding.x and plan.encoding.y:
+        parts.append(f"To evaluate trends over {plan.encoding.x.field}.")
+
+    if plan.chart_type == ChartType.hist:
+        parts.append("To assess distribution shape and skew.")
 
     if not parts:
-        parts.append(f"Selected {ct} chart.")
+        parts.append(f"Selected {ct} chart to examine {fields}.")
 
     return " ".join(parts)
