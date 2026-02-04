@@ -20,6 +20,9 @@ from core.models import (
 
 logger = logging.getLogger("uvicorn.error")
 
+# Track whether we've already warned about LLM unavailability this session
+_llm_warn_logged = False
+
 
 # ---------------------------------------------------------------------------
 # Prompts
@@ -98,7 +101,10 @@ def summarize_step(
         }
 
     except Exception as e:
-        logger.warning("Narration failed, using fallback: %s", e)
+        global _llm_warn_logged
+        if not _llm_warn_logged:
+            logger.warning("LLM narration unavailable, using deterministic fallback: %s", e)
+            _llm_warn_logged = True
         return _fallback_summary(step, views, profile)
 
 
@@ -141,7 +147,10 @@ def plan_next_actions(
         )
 
     except Exception as e:
-        logger.warning("Planning failed, using fallback: %s", e)
+        global _llm_warn_logged
+        if not _llm_warn_logged:
+            logger.warning("LLM planning unavailable, using deterministic fallback: %s", e)
+            _llm_warn_logged = True
         return _fallback_plan(steps_done)
 
 
