@@ -1,4 +1,4 @@
-# AI Data Vis (Next.js + FastAPI + Vega-Lite)
+# AutoEDA (Next.js + FastAPI + Vega-Lite)
 
 Generate interactive visualizations from natural language using LLMs. Upload your data, describe what you want to see, and get a chart back instantly.
 
