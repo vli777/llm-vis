@@ -15,6 +15,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 load_dotenv()
 
 DEFAULT_NVIDIA_BASE = "https://integrate.api.nvidia.com/v1"
+DEFAULT_GROQ_BASE = "https://api.groq.com/openai/v1"
 
 
 class LLMConfigError(RuntimeError):
@@ -42,14 +43,6 @@ def create_chat_model(temperature: float = 0.1) -> BaseChatModel:
     provider = _resolve_provider()
 
     if provider in {"groq"}:
-        try:
-            from langchain_groq import ChatGroq  # type: ignore
-        except ImportError as exc:  # pragma: no cover - optional dependency
-            raise LLMConfigError(
-                "Groq provider selected but langchain-groq is not installed. "
-                "Run `pip install langchain-groq` or switch LLM_PROVIDER."
-            ) from exc
-
         api_key = _env("LLM_API_KEY") or _env("GROQ_API_KEY")
         if not api_key:
             raise LLMConfigError(
@@ -57,11 +50,31 @@ def create_chat_model(temperature: float = 0.1) -> BaseChatModel:
                 "Set LLM_API_KEY or GROQ_API_KEY."
             )
 
-        model = _resolve_model("llama-3.1-8b-instant")
-        return ChatGroq(
+        model = _resolve_model("openai/gpt-oss-120b")
+        base_url = _env("LLM_BASE_URL", DEFAULT_GROQ_BASE)
+        service_tier = _env("GROQ_SERVICE_TIER", "on_demand")
+
+        # Prefer langchain-groq if installed; otherwise use ChatOpenAI
+        # against Groq's OpenAI-compatible endpoint.
+        try:
+            from langchain_groq import ChatGroq  # type: ignore
+
+            return ChatGroq(
+                model=model,
+                temperature=temperature,
+                groq_api_key=api_key,
+            )
+        except ImportError:
+            pass
+
+        from langchain_openai import ChatOpenAI  # type: ignore
+
+        return ChatOpenAI(
             model=model,
             temperature=temperature,
-            groq_api_key=api_key,
+            api_key=api_key,
+            base_url=base_url.rstrip("/"),
+            service_tier=service_tier,
         )
 
     if provider in {"nvidia", "nv", "nvcf"}:
