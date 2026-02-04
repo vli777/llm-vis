@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { TargetInsights, ViewResult } from "@/types/chart";
+import type { AnalysisInsights, ViewResult } from "@/types/chart";
 
 export type StepSegment = {
   step_type: string;
@@ -15,7 +15,7 @@ export type SSEState = {
   progress: string;
   error: string | null;
   runId: string | null;
-  targetInsights: TargetInsights | null;
+  analysisInsights: AnalysisInsights | null;
 };
 
 type SSEEventData = Record<string, any>;
@@ -32,7 +32,7 @@ export function useSSE() {
     progress: "",
     error: null,
     runId: null,
-    targetInsights: null,
+    analysisInsights: null,
   });
 
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -54,7 +54,7 @@ export function useSSE() {
         progress: "Connecting...",
         error: null,
         runId,
-        targetInsights: null,
+        analysisInsights: null,
       });
 
       const url = `${baseUrl}/api/runs/${runId}/events?session_id=${encodeURIComponent(sessionId)}`;
@@ -81,11 +81,11 @@ export function useSSE() {
         }));
       });
 
-      es.addEventListener("target_insights", (e: MessageEvent) => {
-        const data: TargetInsights = JSON.parse(e.data);
+      es.addEventListener("analysis_intents", (e: MessageEvent) => {
+        const data: AnalysisInsights = JSON.parse(e.data);
         setState((prev) => ({
           ...prev,
-          targetInsights: data,
+          analysisInsights: data,
         }));
       });
 

@@ -1,0 +1,135 @@
+"""
+Intent reasoning skill — uses LLM to propose analysis intents from dataset profile.
+
+Falls back to heuristic intents if LLM is unavailable.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Dict, List
+
+from core.models import AnalysisInsights, AnalysisIntent, DataProfile, ColumnRole
+
+logger = logging.getLogger("uvicorn.error")
+_llm_warn_logged = False
+
+_INTENT_SYSTEM = """You are an expert data analyst.
+Given a dataset profile, propose a prioritized list of analysis intents that would surface useful insights.
+
+Return JSON:
+{
+  "intents": [
+    {"title": "string", "rationale": "string", "fields": ["col1", "col2"], "priority": 1}
+  ],
+  "warnings": ["string"]
+}
+
+Rules:
+- Provide 4-8 intents.
+- Favor intents grounded in the actual columns and roles.
+- Use concrete language (e.g., "Trend of retail sales over time", "Top item types by transfers").
+- If you detect a likely target, include it as one intent but not the only one.
+- Return ONLY valid JSON. No prose, no code fences.
+"""
+
+
+def infer_analysis_intents(profile: DataProfile) -> AnalysisInsights:
+    """LLM-driven intent inference with heuristic fallback."""
+    try:
+        from app.llm import chat_json
+
+        payload = _profile_payload(profile)
+        result = chat_json(_INTENT_SYSTEM, json.dumps(payload, default=str), max_tokens=900)
+        return _coerce_insights(result)
+    except Exception as e:
+        global _llm_warn_logged
+        if not _llm_warn_logged:
+            logger.warning("LLM intent reasoning unavailable, using heuristic fallback: %s", e)
+            _llm_warn_logged = True
+        return _heuristic_intents(profile)
+
+
+def _profile_payload(profile: DataProfile) -> Dict[str, Any]:
+    return {
+        "table_name": profile.table_name,
+        "row_count": profile.row_count,
+        "columns": [
+            {
+                "name": c.name,
+                "dtype": c.dtype,
+                "role": c.role.value,
+                "cardinality": c.cardinality,
+                "missing_pct": c.missing_pct,
+                "examples": (c.examples or [])[:3],
+            }
+            for c in profile.columns[:30]
+        ],
+    }
+
+
+def _coerce_insights(obj: Dict[str, Any]) -> AnalysisInsights:
+    intents_raw = obj.get("intents") or []
+    warnings = obj.get("warnings") or []
+    intents: List[AnalysisIntent] = []
+    for i, it in enumerate(intents_raw):
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()
+        if not title:
+            continue
+        intents.append(AnalysisIntent(
+            title=title,
+            rationale=str(it.get("rationale") or ""),
+            fields=list(it.get("fields") or []),
+            priority=int(it.get("priority") or (i + 1)),
+        ))
+    return AnalysisInsights(intents=intents, warnings=list(warnings))
+
+
+def _heuristic_intents(profile: DataProfile) -> AnalysisInsights:
+    intents: List[AnalysisIntent] = []
+    cols = profile.columns
+
+    temporals = [c for c in cols if c.role == ColumnRole.temporal]
+    measures = [c for c in cols if c.role in (ColumnRole.measure, ColumnRole.count)]
+    cats = [c for c in cols if c.role in (ColumnRole.categorical, ColumnRole.nominal, ColumnRole.geographic)]
+
+    if temporals and measures:
+        intents.append(AnalysisIntent(
+            title=f"Trend of {measures[0].name} over time",
+            rationale="Temporal + numeric columns support trend analysis.",
+            fields=[temporals[0].name, measures[0].name],
+            priority=1,
+        ))
+    if cats and measures:
+        intents.append(AnalysisIntent(
+            title=f"Top {cats[0].name} by {measures[0].name}",
+            rationale="Categorical + numeric columns support ranking.",
+            fields=[cats[0].name, measures[0].name],
+            priority=2,
+        ))
+    if len(measures) >= 2:
+        intents.append(AnalysisIntent(
+            title=f"Relationship between {measures[0].name} and {measures[1].name}",
+            rationale="Multiple measures support correlation analysis.",
+            fields=[measures[0].name, measures[1].name],
+            priority=3,
+        ))
+    if cats and temporals and measures:
+        intents.append(AnalysisIntent(
+            title=f"Seasonality by {cats[0].name}",
+            rationale="Temporal + categorical breakdown reveals seasonality/segments.",
+            fields=[temporals[0].name, cats[0].name, measures[0].name],
+            priority=4,
+        ))
+    if not intents:
+        intents.append(AnalysisIntent(
+            title="Overview of distributions and missingness",
+            rationale="Fallback when no strong signals are available.",
+            fields=[],
+            priority=1,
+        ))
+
+    return AnalysisInsights(intents=intents, warnings=[])

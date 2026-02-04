@@ -149,26 +149,15 @@ class DecisionRecord(BaseModel):
     next_actions: List[str] = Field(default_factory=list)
 
 
-class TargetSpec(BaseModel):
-    column: Optional[str] = None
-    task_type: str = "unknown"   # regression | classification | ranking | unknown
-    confidence: float = 0.0
-    reason: str = ""
+class AnalysisIntent(BaseModel):
+    title: str
+    rationale: str = ""
+    fields: List[str] = Field(default_factory=list)
+    priority: int = 0
 
 
-class TargetAssociation(BaseModel):
-    feature: str
-    metric: str
-    score: float
-    direction: Optional[str] = None
-    details: Optional[Dict[str, Any]] = None
-
-
-class TargetInsights(BaseModel):
-    target: TargetSpec = Field(default_factory=TargetSpec)
-    distribution: Optional[Dict[str, Any]] = None
-    associations: List[TargetAssociation] = Field(default_factory=list)
-    missingness: List[TargetAssociation] = Field(default_factory=list)
+class AnalysisInsights(BaseModel):
+    intents: List[AnalysisIntent] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
 
 
@@ -176,7 +165,7 @@ class EDAReport(BaseModel):
     run_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     table_name: str = ""
     profile: Optional[DataProfile] = None
-    target_insights: Optional[TargetInsights] = None
+    analysis_insights: Optional[AnalysisInsights] = None
     steps: List[StepResult] = Field(default_factory=list)
     views: List[ViewResult] = Field(default_factory=list)
     timeline: List[DecisionRecord] = Field(default_factory=list)

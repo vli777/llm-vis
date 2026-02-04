@@ -136,7 +136,7 @@ export default function Page() {
   const hasSegments = sseState.segments.length > 0;
   const showStreamingUI =
     hasSegments || isStreaming || sseState.status === "complete";
-  const targetInsights = sseState.targetInsights || report?.target_insights || null;
+  const analysisInsights = sseState.analysisInsights || report?.analysis_insights || null;
 
   // Build views map for sync mode
   const syncViewsById = new Map<string, ViewResult>();
@@ -191,93 +191,32 @@ export default function Page() {
         )}
       </div>
 
-      {targetInsights && (
+      {analysisInsights && analysisInsights.intents.length > 0 && (
         <div className="mt-4 theme-panel p-4">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-base font-semibold theme-muted m-0">Target Analysis</h2>
-            {targetInsights.target?.confidence != null && (
-              <span className="text-xs theme-muted">
-                Confidence {Math.round(targetInsights.target.confidence * 100)}%
-              </span>
-            )}
-          </div>
-
-          <div className="mt-2 text-sm theme-muted">
-            Target: <span className="font-semibold">{targetInsights.target?.column || "Unknown"}</span>{" "}
-            <span className="ml-2">Task: {targetInsights.target?.task_type || "unknown"}</span>
-          </div>
-
-          {targetInsights.warnings.length > 0 && (
+          <h2 className="text-base font-semibold theme-muted m-0">Analysis Intents</h2>
+          {analysisInsights.warnings.length > 0 && (
             <div className="mt-2 text-sm theme-accent">
-              {targetInsights.warnings.map((w, i) => (
+              {analysisInsights.warnings.map((w, i) => (
                 <div key={i}>{w}</div>
               ))}
             </div>
           )}
-
-          {targetInsights.distribution && (
-            <div className="mt-3 text-sm theme-muted">
-              <div className="font-semibold">Distribution</div>
-              {"class_counts" in targetInsights.distribution ? (
-                <div className="mt-1 space-y-1">
-                  {Object.entries(targetInsights.distribution.class_counts || {}).map(
-                    ([label, count]) => (
-                      <div key={label}>
-                        {label}: {count}
-                      </div>
-                    )
-                  )}
-                </div>
-              ) : (
-                <div className="mt-1 space-y-1">
-                  {"min" in targetInsights.distribution && (
-                    <div>
-                      Range: {targetInsights.distribution.min} – {targetInsights.distribution.max}
+          <div className="mt-3 space-y-2 text-sm theme-muted">
+            {analysisInsights.intents
+              .slice()
+              .sort((a, b) => (a.priority || 0) - (b.priority || 0))
+              .map((intent, i) => (
+                <div key={i}>
+                  <div className="font-semibold">{intent.title}</div>
+                  {intent.rationale && <div className="text-xs theme-muted">{intent.rationale}</div>}
+                  {intent.fields?.length > 0 && (
+                    <div className="text-xs theme-muted">
+                      Fields: {intent.fields.join(", ")}
                     </div>
                   )}
-                  {"mean" in targetInsights.distribution && (
-                    <div>
-                      Mean: {targetInsights.distribution.mean} (std {targetInsights.distribution.std})
-                    </div>
-                  )}
-                  {"skew" in targetInsights.distribution && (
-                    <div>Skew: {targetInsights.distribution.skew}</div>
-                  )}
-                  {"zero_pct" in targetInsights.distribution && (
-                    <div>Zero pct: {Math.round(targetInsights.distribution.zero_pct * 100)}%</div>
-                  )}
                 </div>
-              )}
-            </div>
-          )}
-
-          {targetInsights.associations.length > 0 && (
-            <div className="mt-3 text-sm theme-muted">
-              <div className="font-semibold">Top Associations</div>
-              <div className="mt-1 space-y-1">
-                {targetInsights.associations.map((a, i) => (
-                  <div key={i}>
-                    {a.feature}: {a.metric} = {a.score}
-                    {a.direction ? ` (${a.direction})` : ""}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {targetInsights.missingness.length > 0 && (
-            <div className="mt-3 text-sm theme-muted">
-              <div className="font-semibold">Missingness Signals</div>
-              <div className="mt-1 space-y-1">
-                {targetInsights.missingness.map((a, i) => (
-                  <div key={i}>
-                    {a.feature}: {a.metric} = {a.score}
-                    {a.direction ? ` (${a.direction})` : ""}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+              ))}
+          </div>
         </div>
       )}
 
