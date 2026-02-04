@@ -90,5 +90,20 @@ def get_views(run_id: str) -> List[ViewResult]:
     return RUN_VIEWS.get(run_id, [])
 
 
+def set_run_views(run_id: str, views: List[ViewResult]) -> None:
+    """Replace the stored views for a run (used when reusing prior results)."""
+    RUN_VIEWS[run_id] = list(views)
+
+
 def get_session_runs(session_id: str) -> List[str]:
     return SESSION_RUNS.get(session_id, [])
+
+
+def get_latest_run_for_table(session_id: str, table_name: str) -> Optional[EDAReport]:
+    """Return most recent run for a given table in the session."""
+    run_ids = SESSION_RUNS.get(session_id, [])
+    for run_id in reversed(run_ids):
+        report = RUNS.get(run_id)
+        if report and report.table_name == table_name:
+            return report
+    return None

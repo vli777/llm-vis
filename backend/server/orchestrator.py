@@ -22,7 +22,8 @@ from core.models import (
     ViewPlan,
     ViewResult,
 )
-from core.storage import append_view, create_run, save_run
+from core.storage import append_view, create_run, save_run, get_latest_run_for_table, get_views, set_run_views
+from core.utils import tokenize
 from server.sse import (
     SSEChannel,
     EVT_ERROR,
@@ -63,6 +64,36 @@ STEP_BUDGET = 4
 # Synchronous pipeline (Phase A)
 # ---------------------------------------------------------------------------
 
+def _build_llm_context(report: EDAReport) -> dict:
+    """Compact context for LLM decisions to avoid repeating analysis."""
+    steps = []
+    for s in report.steps:
+        steps.append({
+            "step_type": s.step_type.value,
+            "headline": s.headline,
+            "findings": (s.findings or [])[:2],
+        })
+
+    views = []
+    for v in report.views[-20:]:
+        views.append({
+            "intent": v.plan.intent,
+            "fields": v.plan.fields_used,
+            "title": v.spec.title,
+        })
+
+    intents = []
+    if report.analysis_insights:
+        for i in report.analysis_insights.intents[:8]:
+            intents.append({"title": i.title, "fields": i.fields, "priority": i.priority})
+
+    return {
+        "steps_done": steps,
+        "views_done": views,
+        "intents": intents,
+        "table": report.table_name,
+    }
+
 def run_eda_sync(
     df: pd.DataFrame,
     table_name: str,
@@ -84,6 +115,11 @@ def run_eda_sync(
        f. Append to the report
     3. Return the complete EDAReport
     """
+    if query:
+        existing = get_latest_run_for_table(session_id, table_name)
+        if existing and _query_matches_report(query, existing):
+            logger.info("Reusing existing run %s for query", existing.run_id)
+            return existing
     # Create run
     report = create_run(session_id, table_name)
     logger.info("EDA run %s started for table '%s' (%d rows)", report.run_id, table_name, len(df))
@@ -132,7 +168,9 @@ def run_eda_sync(
 
         if step_type == StepType.analysis_intents:
             if report.analysis_insights is None:
-                report.analysis_insights = infer_analysis_intents(profile)
+                report.analysis_insights = infer_analysis_intents(
+                    profile, context=_build_llm_context(report)
+                )
             intents = report.analysis_insights.intents if report.analysis_insights else []
             intent_texts = [i.title for i in intents] + [f for i in intents for f in i.fields]
             step_result = StepResult(
@@ -145,8 +183,12 @@ def run_eda_sync(
 
         if step_type == StepType.intent_selection:
             if report.analysis_insights is None:
-                report.analysis_insights = infer_analysis_intents(profile)
-            selection = select_intent(report.analysis_insights, query=query or "")
+                report.analysis_insights = infer_analysis_intents(
+                    profile, context=_build_llm_context(report)
+                )
+            selection = select_intent(
+                report.analysis_insights, query=query or "", context=_build_llm_context(report)
+            )
             selected_title = selection.get("selected_title") or "Selected intent"
             selected_fields = selection.get("fields") or []
             intent_texts = [selected_title] + selected_fields
@@ -232,14 +274,19 @@ def run_eda_sync(
 
         # Narrate: enrich headline/findings via LLM (falls back to deterministic)
         if step_view_results:
-            narration = summarize_step(profile, step_result, step_view_results)
+            narration = summarize_step(
+                profile, step_result, step_view_results, context=_build_llm_context(report)
+            )
             step_result.headline = narration.get("headline", step_result.headline)
             step_result.findings = narration.get("findings", step_result.findings)
 
         report.steps.append(step_result)
 
         # Record decision in timeline
-        decision = plan_next_actions(profile, report.steps, all_view_results, budget - total_views)
+        decision = plan_next_actions(
+            profile, report.steps, all_view_results, budget - total_views,
+            context=_build_llm_context(report),
+        )
         report.timeline.append(decision)
 
     logger.info("EDA run %s complete: %d views across %d steps",
@@ -255,6 +302,87 @@ def run_eda_sync(
 # ---------------------------------------------------------------------------
 
 _executor = ThreadPoolExecutor(max_workers=2)
+
+
+# ---------------------------------------------------------------------------
+# Reuse prior analysis for repeated queries
+# ---------------------------------------------------------------------------
+
+def _query_matches_report(query: str, report: EDAReport) -> bool:
+    tokens = tokenize(query or "")
+    if len(tokens) < 2:
+        return False
+
+    def match_text(text: str) -> float:
+        text_tokens = set(tokenize(text or ""))
+        if not text_tokens:
+            return 0.0
+        overlap = len(text_tokens.intersection(tokens))
+        return overlap / max(1, len(set(tokens)))
+
+    # Check view intents/titles and step findings
+    for v in report.views:
+        score = max(match_text(v.plan.intent), match_text(v.spec.title))
+        if score >= 0.4:
+            return True
+
+    for step in report.steps:
+        if any(match_text(f) >= 0.4 for f in step.findings):
+            return True
+        if match_text(step.headline) >= 0.4:
+            return True
+
+    return False
+
+
+async def _emit_reused_run(
+    report: EDAReport,
+    channel: SSEChannel,
+    *,
+    table_name: str,
+    row_count: int,
+) -> None:
+    views_by_id = {v.id: v for v in report.views}
+    await channel.emit(EVT_RUN_STARTED, {
+        "run_id": report.run_id,
+        "table_name": table_name,
+        "row_count": row_count,
+    })
+    if report.profile:
+        await channel.emit(EVT_PROGRESS, {
+            "stage": "profile_complete",
+            "columns": len(report.profile.columns),
+            "row_count": report.profile.row_count,
+        })
+    if report.analysis_insights:
+        await channel.emit(EVT_ANALYSIS_INTENTS, report.analysis_insights.model_dump())
+
+    for idx, step in enumerate(report.steps):
+        await channel.emit(EVT_STEP_STARTED, {
+            "step_type": step.step_type.value,
+            "budget": 0,
+            "step_index": idx,
+        })
+        # Emit views for the step in stored order
+        for view_id in step.views:
+            view = views_by_id.get(view_id)
+            if view:
+                await channel.emit(EVT_VIEW_READY, view.model_dump())
+        await channel.emit(EVT_STEP_SUMMARY, {
+            "step_type": step.step_type.value,
+            "headline": step.headline,
+            "view_count": len(step.views),
+            "findings": step.findings,
+            "decision_trace": step.decision_trace,
+            "step_index": idx,
+        })
+
+    await channel.emit(EVT_RUN_COMPLETE, {
+        "run_id": report.run_id,
+        "total_views": len(report.views),
+        "total_steps": len(report.steps),
+    })
+    await channel.close()
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +405,20 @@ async def run_eda_async(
     CPU-bound view building runs in a thread pool executor.
     """
     loop = asyncio.get_event_loop()
+
+    if query:
+        existing = get_latest_run_for_table(session_id, table_name)
+        if existing and _query_matches_report(query, existing):
+            report = create_run(session_id, table_name)
+            report.profile = existing.profile
+            report.steps = list(existing.steps)
+            report.views = list(existing.views)
+            report.timeline = list(existing.timeline)
+            report.analysis_insights = existing.analysis_insights
+            set_run_views(report.run_id, report.views)
+            save_run(report)
+            await _emit_reused_run(report, channel, table_name=table_name, row_count=len(df))
+            return report
 
     report = create_run(session_id, table_name)
     await channel.emit(EVT_RUN_STARTED, {
@@ -347,7 +489,9 @@ async def run_eda_async(
 
         if step_type == StepType.analysis_intents:
             if report.analysis_insights is None:
-                report.analysis_insights = await loop.run_in_executor(_executor, infer_analysis_intents, profile)
+                report.analysis_insights = await loop.run_in_executor(
+                    _executor, lambda: infer_analysis_intents(profile, context=_build_llm_context(report))
+                )
             intents = report.analysis_insights.intents if report.analysis_insights else []
             intent_texts = [i.title for i in intents] + [f for i in intents for f in i.fields]
             step_result = StepResult(
@@ -369,9 +513,13 @@ async def run_eda_async(
 
         if step_type == StepType.intent_selection:
             if report.analysis_insights is None:
-                report.analysis_insights = await loop.run_in_executor(_executor, infer_analysis_intents, profile)
+                report.analysis_insights = await loop.run_in_executor(
+                    _executor, lambda: infer_analysis_intents(profile, context=_build_llm_context(report))
+                )
             selection = await loop.run_in_executor(
-                _executor, lambda: select_intent(report.analysis_insights, query=query or "")
+                _executor, lambda: select_intent(
+                    report.analysis_insights, query=query or "", context=_build_llm_context(report)
+                )
             )
             selected_title = selection.get("selected_title") or "Selected intent"
             selected_fields = selection.get("fields") or []
@@ -463,7 +611,9 @@ async def run_eda_async(
         # Narrate: enrich headline/findings (runs in executor to avoid blocking SSE)
         if step_view_results:
             narration = await loop.run_in_executor(
-                _executor, summarize_step, profile, step_result, step_view_results,
+                _executor, lambda: summarize_step(
+                    profile, step_result, step_view_results, context=_build_llm_context(report)
+                ),
             )
             step_result.headline = narration.get("headline", step_result.headline)
             step_result.findings = narration.get("findings", step_result.findings)
@@ -475,7 +625,10 @@ async def run_eda_async(
         report.steps.append(step_result)
 
         # Record decision in timeline
-        decision = plan_next_actions(profile, report.steps, all_view_results, budget - total_views)
+        decision = plan_next_actions(
+            profile, report.steps, all_view_results, budget - total_views,
+            context=_build_llm_context(report),
+        )
         report.timeline.append(decision)
 
         await channel.emit(EVT_STEP_SUMMARY, {

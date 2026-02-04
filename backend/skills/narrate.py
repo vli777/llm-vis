@@ -68,6 +68,8 @@ def summarize_step(
     profile: DataProfile,
     step: StepResult,
     views: List[ViewResult],
+    *,
+    context: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """
     Use LLM to produce a headline + findings for a completed step.
@@ -86,13 +88,16 @@ def summarize_step(
             }
             view_summaries.append(summary)
 
-        user_msg = json.dumps({
+        payload = {
             "step_type": step.step_type.value,
             "table": profile.table_name,
             "row_count": profile.row_count,
             "columns": [c.name for c in profile.columns[:15]],
             "views": view_summaries,
-        }, default=str)
+        }
+        if context:
+            payload["analysis_context"] = context
+        user_msg = json.dumps(payload, default=str)
 
         result = chat_json(_SUMMARIZE_SYSTEM, user_msg)
         return {
@@ -113,6 +118,8 @@ def plan_next_actions(
     steps_done: List[StepResult],
     views_done: List[ViewResult],
     budget: int,
+    *,
+    context: Dict[str, Any] | None = None,
 ) -> DecisionRecord:
     """
     Use LLM to decide what analysis step to run next.
@@ -123,14 +130,17 @@ def plan_next_actions(
         from app.llm import chat_json
 
         done_types = [s.step_type.value for s in steps_done]
-        user_msg = json.dumps({
+        payload = {
             "table": profile.table_name,
             "row_count": profile.row_count,
             "columns": [c.name for c in profile.columns[:15]],
             "steps_done": done_types,
             "views_count": len(views_done),
             "budget_remaining": budget,
-        }, default=str)
+        }
+        if context:
+            payload["analysis_context"] = context
+        user_msg = json.dumps(payload, default=str)
 
         result = chat_json(_PLAN_SYSTEM, user_msg)
 

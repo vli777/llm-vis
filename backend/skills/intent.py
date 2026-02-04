@@ -51,12 +51,14 @@ Rules:
 """
 
 
-def infer_analysis_intents(profile: DataProfile) -> AnalysisInsights:
+def infer_analysis_intents(profile: DataProfile, *, context: dict | None = None) -> AnalysisInsights:
     """LLM-driven intent inference with heuristic fallback."""
     try:
         from app.llm import chat_json
 
         payload = _profile_payload(profile)
+        if context:
+            payload["analysis_context"] = context
         result = chat_json(_INTENT_SYSTEM, json.dumps(payload, default=str), max_tokens=900)
         return _coerce_insights(result)
     except Exception as e:
@@ -67,7 +69,12 @@ def infer_analysis_intents(profile: DataProfile) -> AnalysisInsights:
         return _heuristic_intents(profile)
 
 
-def select_intent(intents: AnalysisInsights, *, query: str = "") -> dict:
+def select_intent(
+    intents: AnalysisInsights,
+    *,
+    query: str = "",
+    context: dict | None = None,
+) -> dict:
     """Select the next intent to pursue."""
     intent_list = intents.intents if intents else []
     if not intent_list:
@@ -83,6 +90,8 @@ def select_intent(intents: AnalysisInsights, *, query: str = "") -> dict:
                 for i in intent_list
             ],
         }
+        if context:
+            payload["analysis_context"] = context
         result = chat_json(_SELECT_SYSTEM, json.dumps(payload, default=str), max_tokens=400)
         return {
             "selected_title": str(result.get("selected_title") or intent_list[0].title),

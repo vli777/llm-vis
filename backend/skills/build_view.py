@@ -555,6 +555,17 @@ def build_view(plan: ViewPlan, df: pd.DataFrame) -> ViewResult:
 
     explanation = _auto_explanation(plan, data, df)
 
+    if not data:
+        logger.warning(
+            "View data empty: chart=%s intent=%s fields=%s",
+            plan.chart_type.value, plan.intent, plan.fields_used,
+        )
+    else:
+        logger.info(
+            "View built: chart=%s keys=%s intent=%s",
+            plan.chart_type.value, list(data[0].keys()), plan.intent,
+        )
+
     return ViewResult(
         plan=plan,
         spec=spec,
@@ -572,11 +583,10 @@ def _auto_explanation(plan: ViewPlan, data: List[Dict[str, Any]], df: pd.DataFra
     if not data:
         return "No data available for this view."
 
-    n = len(data)
     ct = plan.chart_type.value
     fields = ", ".join(plan.fields_used) if plan.fields_used else "selected columns"
 
-    parts = [f"Shows {ct} chart with {n} data points."]
+    parts = []
 
     if plan.chart_type == ChartType.bar and plan.encoding.y:
         y_field = plan.encoding.y.field
@@ -588,10 +598,10 @@ def _auto_explanation(plan: ViewPlan, data: List[Dict[str, Any]], df: pd.DataFra
                 if x_field and x_field in top_val:
                     parts.append(f"Top: {top_val.get(x_field)} ({top_val.get(y_field)}).")
 
-    if plan.chart_type == ChartType.hist:
-        parts.append(f"Distribution across {n} bins.")
-
     if plan.chart_type == ChartType.scatter and plan.encoding.x and plan.encoding.y:
         parts.append(f"Comparing {plan.encoding.x.field} vs {plan.encoding.y.field}.")
+
+    if not parts:
+        parts.append(f"Analysis of {fields}.")
 
     return " ".join(parts)
