@@ -29,11 +29,11 @@ export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
   return (
     <form
       onSubmit={(e) => { e.preventDefault(); if (!composingRef.current) submit(); }}
-      className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2"
+      className="theme-card flex items-center gap-2 px-3 py-2"
       aria-busy={disabled || undefined}
     >
       {disabled ? (
-        <Loader2 className="h-5 w-5 animate-spin text-slate-400" aria-hidden="true" />
+        <Loader2 className="h-5 w-5 animate-spin theme-muted" aria-hidden="true" />
       ) : (
         <span className="h-5 w-5" aria-hidden="true" />
       )}
@@ -46,7 +46,7 @@ export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
         disabled={disabled}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
-        className="flex-1 bg-transparent py-2 text-slate-200 outline-none placeholder:text-slate-500 disabled:opacity-60"
+        className="theme-input flex-1 bg-transparent py-2 outline-none disabled:opacity-60"
         aria-label="Prompt"
         autoComplete="off"
         spellCheck={false}
@@ -55,7 +55,7 @@ export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
       <button
         type="submit"
         disabled={disabled || !text.trim()}
-        className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
+        className="theme-button rounded-md px-3 py-2 text-sm"
       >
         Submit
       </button>

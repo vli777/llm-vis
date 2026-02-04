@@ -31,18 +31,18 @@ export default function RechartsCard({ spec, explanation }: Props) {
   const Renderer = useMemo(() => RENDERERS[spec.chart_type] || DataTable, [spec.chart_type]);
 
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2">
+    <div className="theme-panel p-4 flex flex-col gap-2">
       {spec.title && (
-        <h3 className="text-sm font-semibold text-slate-200 m-0">{spec.title}</h3>
+        <h3 className="text-sm font-semibold theme-muted m-0">{spec.title}</h3>
       )}
       {spec.subtitle && (
-        <p className="text-xs text-slate-400 m-0">{spec.subtitle}</p>
+        <p className="text-xs theme-muted m-0">{spec.subtitle}</p>
       )}
       <div className="flex-1 min-h-[240px]">
         <Renderer spec={spec} />
       </div>
       {explanation && (
-        <p className="text-xs text-slate-500 mt-1 m-0">{explanation}</p>
+        <p className="text-xs theme-muted mt-1 m-0">{explanation}</p>
       )}
     </div>
   );

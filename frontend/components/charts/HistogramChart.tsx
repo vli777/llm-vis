@@ -12,7 +12,7 @@ import type { ChartSpec } from "@/types/chart";
 
 export default function HistogramChart({ spec }: { spec: ChartSpec }) {
   const data = spec.data_inline || [];
-  if (!data.length) return <div className="text-sm text-slate-500">No data</div>;
+  if (!data.length) return <div className="text-sm theme-muted">No data</div>;
 
   return (
     <ResponsiveContainer width="100%" height="100%">

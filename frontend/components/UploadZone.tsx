@@ -105,22 +105,24 @@ export function UploadZone({
 
   return (
     <div
-      className={`flex items-center justify-between gap-4 rounded-xl border-2 border-dashed p-6 transition-all ${
-        isDragging
-          ? "border-blue-500 bg-blue-950/20 scale-[1.02]"
-          : "border-slate-700 bg-slate-950 hover:border-slate-600"
+      className={`theme-panel flex items-center justify-between gap-4 border-2 border-dashed p-6 transition-all ${
+        isDragging ? "scale-[1.02]" : ""
       }`}
+      style={{
+        borderColor: isDragging ? "var(--color-primary)" : "var(--color-border)",
+        background: isDragging ? "var(--color-surface)" : "var(--color-surface-strong)",
+      }}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       <div>
-        <div className="font-medium">Upload CSV</div>
-        <div className="text-sm text-slate-400">
+        <div className="font-medium theme-muted">Upload CSV</div>
+        <div className="text-sm theme-muted">
           Drag & drop or choose a file. Stored in memory for this session.
         </div>
-        {msg && <div className="mt-1 text-xs text-slate-300">{msg}</div>}
+        {msg && <div className="mt-1 text-xs theme-muted">{msg}</div>}
       </div>
 
       <div>
@@ -136,9 +138,9 @@ export function UploadZone({
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
+          className="theme-button flex items-center gap-2 rounded-lg px-3 py-2 text-sm"
         >
-          {busy && <Loader2 className="h-4 w-4 animate-spin text-slate-400" />}
+          {busy && <Loader2 className="h-4 w-4 animate-spin theme-muted" />}
           <span>{busy ? "Uploading…" : "Choose file"}</span>
         </button>
       </div>

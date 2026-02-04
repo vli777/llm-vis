@@ -7,7 +7,7 @@ import type { ChartSpec } from "@/types/chart";
  */
 export default function HeatmapChart({ spec }: { spec: ChartSpec }) {
   const data = spec.data_inline || [];
-  if (!data.length) return <div className="text-sm text-slate-500">No data</div>;
+  if (!data.length) return <div className="text-sm theme-muted">No data</div>;
 
   const xField = spec.encoding.x?.field || Object.keys(data[0])[0];
   const yField = spec.encoding.y?.field || Object.keys(data[0])[1];

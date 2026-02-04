@@ -1,4 +1,75 @@
 @import "tailwindcss";
 
-/* optional: nicer focus ring on dark bg */
-:root { color-scheme: dark; }
+:root {
+  color-scheme: light;
+  --color-bg: #ffffff;
+  --color-text: #000000;
+  --color-primary: #0087ca;
+  --color-accent: #ff3d33;
+  --color-muted: #3a4968;
+  --color-border: #d6dee8;
+  --color-surface: #f7f9fc;
+  --color-surface-strong: #ffffff;
+}
+
+body.theme-body {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.theme-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.theme-panel {
+  background: var(--color-surface-strong);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+}
+
+.theme-muted {
+  color: var(--color-muted);
+}
+
+.theme-primary {
+  color: var(--color-primary);
+}
+
+.theme-accent {
+  color: var(--color-accent);
+}
+
+.theme-button {
+  background: var(--color-primary);
+  color: #ffffff;
+  border: 1px solid var(--color-primary);
+}
+
+.theme-button:hover {
+  background: #0077b2;
+}
+
+.theme-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.theme-input {
+  color: var(--color-text);
+}
+
+.theme-input::placeholder {
+  color: var(--color-muted);
+  opacity: 0.7;
+}
+
+.theme-chip {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.theme-hover:hover {
+  background: var(--color-surface);
+}

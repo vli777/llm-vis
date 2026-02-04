@@ -105,35 +105,35 @@ function TableListItem({ t }: { t: TableInfo }) {
   return (
     <li className="mb-3">
       <div
-        className="cursor-pointer hover:bg-slate-900/50 p-2 -mx-2 rounded transition-colors"
+        className="theme-hover cursor-pointer p-2 -mx-2 rounded transition-colors"
         onClick={togglePreview}
       >
         <div className="flex items-start gap-2">
           <div className="mt-0.5">
             {isExpanded ? (
-              <ChevronDown className="h-4 w-4 text-slate-400" />
+              <ChevronDown className="h-4 w-4 theme-muted" />
             ) : (
-              <ChevronRight className="h-4 w-4 text-slate-400" />
+              <ChevronRight className="h-4 w-4 theme-muted" />
             )}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="font-semibold text-slate-200">
+            <div className="font-semibold theme-muted">
               {t.name}{" "}
               {metaBits && (
-                <span className="text-xs text-slate-400">{metaBits}</span>
+                <span className="text-xs theme-muted">{metaBits}</span>
               )}
             </div>
 
             {dtypeTxt && (
-              <div className="text-xs text-slate-300 break-words whitespace-normal">
-                <span className="text-slate-200">types:</span>{" "}
+              <div className="text-xs theme-muted break-words whitespace-normal">
+                <span className="theme-muted">types:</span>{" "}
                 <span className="break-words">{dtypeTxt}</span>
               </div>
             )}
 
             {colsTxt && (
-              <div className="text-xs text-slate-300 mt-1 break-words whitespace-normal truncate">
-                <span className="text-slate-200">columns:</span>{" "}
+              <div className="text-xs theme-muted mt-1 break-words whitespace-normal truncate">
+                <span className="theme-muted">columns:</span>{" "}
                 <span className="break-words">{colsTxt}</span>
               </div>
             )}
@@ -144,52 +144,55 @@ function TableListItem({ t }: { t: TableInfo }) {
       {isExpanded && (
         <div className="mt-4 ml-6">
           {loading && (
-            <div className="flex items-center gap-2 text-sm text-slate-400 py-2">
+            <div className="flex items-center gap-2 text-sm theme-muted py-2">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading preview...
             </div>
           )}
 
-          {error && <div className="text-sm text-red-400 py-2">{error}</div>}
+          {error && <div className="text-sm theme-accent py-2">{error}</div>}
 
           {preview && (
             <div>
-              <div className="text-xs text-slate-400 mb-2">
+              <div className="text-xs theme-muted mb-2">
                 Showing {preview.rows.length} of {preview.total_rows} rows
                 {preview.has_more && " (scroll for more)"}
               </div>
               <div
                 ref={scrollContainerRef}
-                className="overflow-auto max-h-96 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] border border-slate-700 rounded"
+                className="overflow-auto max-h-96 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none] border rounded"
+                style={{ borderColor: "var(--color-border)" }}
                 onScroll={handleScroll}
               >
                 <table className="min-w-full text-xs">
-                  <thead className="bg-slate-800 sticky top-0 z-10 shadow-md">
+                  <thead className="sticky top-0 z-10 shadow-md" style={{ background: "var(--color-surface)" }}>
                     <tr>
                       {preview.columns.map((col) => (
                         <th
                           key={col}
-                          className="px-2 py-2 text-left font-medium text-slate-200 border-b-2 border-slate-700 bg-slate-800"
+                          className="px-2 py-2 text-left font-medium theme-muted border-b-2"
+                          style={{ borderColor: "var(--color-border)" }}
                         >
                           {col}
                         </th>
                       ))}
                     </tr>
                   </thead>
-                  <tbody className="bg-slate-900">
+                  <tbody>
                     {preview.rows.map((row, idx) => (
                       <tr
                         key={idx}
-                        className="border-b border-slate-800 last:border-b-0"
+                        className="border-b last:border-b-0"
+                        style={{ borderColor: "var(--color-border)" }}
                       >
                         {preview.columns.map((col) => (
                           <td
                             key={col}
-                            className="px-2 py-1 text-slate-300 max-w-xs truncate"
+                            className="px-2 py-1 theme-muted max-w-xs truncate"
                             title={String(row[col] ?? "")}
                           >
                             {row[col] === null || row[col] === undefined ? (
-                              <span className="text-slate-500 italic">null</span>
+                              <span className="theme-muted italic">null</span>
                             ) : (
                               String(row[col])
                             )}
@@ -200,7 +203,7 @@ function TableListItem({ t }: { t: TableInfo }) {
                   </tbody>
                 </table>
                 {loadingMore && (
-                  <div className="flex items-center justify-center gap-2 py-3 text-sm text-slate-400">
+                  <div className="flex items-center justify-center gap-2 py-3 text-sm theme-muted">
                     <Loader2 className="h-4 w-4 animate-spin" />
                     Loading more...
                   </div>

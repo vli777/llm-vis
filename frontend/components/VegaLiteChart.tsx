@@ -25,12 +25,12 @@ export function VegaLiteChart({ spec }: { spec: any }) {
 
   return (
     <div
-      className="rounded-lg border border-slate-800 bg-slate-950 p-3"
+      className="theme-panel p-3"
       style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column" }}
     >
       <div style={{ flex: 1, width: "100%", maxWidth: "100%", overflow: "hidden" }}>
         {error ? (
-          <div className="text-sm text-rose-400">Chart error: {error}</div>
+          <div className="text-sm theme-accent">Chart error: {error}</div>
         ) : (
           <VegaLite
             spec={sizedSpec}

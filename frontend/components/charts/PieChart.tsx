@@ -17,7 +17,7 @@ const COLORS = [
 
 export default function PieChartView({ spec }: { spec: ChartSpec }) {
   const data = spec.data_inline || [];
-  if (!data.length) return <div className="text-sm text-slate-500">No data</div>;
+  if (!data.length) return <div className="text-sm theme-muted">No data</div>;
 
   // Determine name and value fields
   const colorField = spec.encoding.color?.field;

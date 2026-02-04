@@ -146,21 +146,14 @@ export default function Page() {
   }
 
   return (
-    <div style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
-      <h1 style={{ fontSize: 28, marginBottom: 8, marginTop: 0 }}>
+    <div className="mx-auto max-w-[1200px] p-6">
+      <h1 className="text-2xl font-semibold theme-muted mb-2 mt-0">
         AI Data Vis
       </h1>
 
       <UploadZone onUploaded={onUploaded} />
 
-      <div
-        style={{
-          marginTop: 16,
-          padding: 12,
-          background: "#111827",
-          borderRadius: 12,
-        }}
-      >
+      <div className="theme-card mt-4 p-3">
         <div className="flex items-center gap-3">
           <div className="flex-1">
             <PromptBar
@@ -175,7 +168,7 @@ export default function Page() {
         {tables.length > 0 && (
           <button
             onClick={() => setShowTables(!showTables)}
-            className="mt-2 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
+            className="mt-2 flex items-center gap-1 text-xs theme-muted hover:text-black"
           >
             {showTables ? (
               <ChevronDown className="h-3 w-3" />
@@ -186,7 +179,7 @@ export default function Page() {
           </button>
         )}
         {showTables && (
-          <div className="mt-1 text-xs text-slate-500 pl-4">
+          <div className="mt-1 text-xs theme-muted pl-4">
             {tables.map((t: any, i: number) => (
               <div key={i}>
                 {t.name || t.table_name || `Table ${i + 1}`}
@@ -199,7 +192,7 @@ export default function Page() {
 
       {/* Error display */}
       {error && (
-        <div className="mt-4 p-3 rounded-lg bg-red-950/50 border border-red-800 text-red-300 text-sm">
+        <div className="mt-4 p-3 rounded-lg border text-sm theme-accent" style={{ borderColor: "var(--color-accent)" }}>
           {error}
         </div>
       )}
@@ -211,13 +204,13 @@ export default function Page() {
         <div className="mt-6 space-y-6">
           {/* Progress indicator */}
           {isStreaming && (
-            <div className="flex items-center gap-2 text-sm text-blue-400">
+            <div className="flex items-center gap-2 text-sm theme-primary">
               <Loader2 className="h-4 w-4 animate-spin" />
               <span>{sseState.progress}</span>
             </div>
           )}
           {sseState.status === "complete" && (
-            <div className="text-sm text-green-400">{sseState.progress}</div>
+            <div className="text-sm theme-primary">{sseState.progress}</div>
           )}
 
           {/* Step segments — rendered sequentially like a notebook */}
@@ -233,16 +226,16 @@ export default function Page() {
               <div key={si}>
                 {/* Step header */}
                 <div className="flex items-center gap-2 mb-3">
-                  <div className="h-6 w-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white shrink-0">
+                  <div className="h-6 w-6 rounded-full theme-chip flex items-center justify-center text-xs font-bold shrink-0">
                     {si + 1}
                   </div>
-                  <h2 className="text-base font-semibold text-slate-200">
+                  <h2 className="text-base font-semibold theme-muted">
                     {segment.complete && segment.headline
                       ? segment.headline
                       : STEP_LABELS[segment.step_type] || segment.step_type}
                   </h2>
                   {!segment.complete && (
-                    <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+                    <Loader2 className="h-4 w-4 animate-spin theme-primary" />
                   )}
                 </div>
 
@@ -250,10 +243,10 @@ export default function Page() {
                 {tableViews.map((view) => (
                   <div
                     key={view.id}
-                    className="mb-4 rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
+                    className="mb-4 theme-panel p-4 flex flex-col gap-2"
                   >
                     {view.spec.title && (
-                      <h3 className="text-sm font-semibold text-slate-200 m-0">
+                      <h3 className="text-sm font-semibold theme-muted m-0">
                         {view.spec.title}
                       </h3>
                     )}
@@ -279,11 +272,11 @@ export default function Page() {
 
                 {/* Findings / Insights */}
                 {segment.complete && segment.findings.length > 0 && (
-                  <div className="mt-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
-                    <h4 className="text-xs font-semibold text-slate-300 mb-1.5">
+                  <div className="mt-3 p-3 theme-panel">
+                    <h4 className="text-sm font-semibold theme-muted mb-1.5">
                       Insights
                     </h4>
-                    <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
+                    <ul className="text-sm theme-muted list-disc list-inside space-y-1">
                       {segment.findings.map((f, fi) => (
                         <li key={fi}>{f}</li>
                       ))}
@@ -303,11 +296,11 @@ export default function Page() {
         <div className="mt-6">
           {/* Profile summary */}
           {report.profile && (
-            <div className="mb-4 p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <h2 className="text-lg font-semibold text-slate-200 mb-1">
+            <div className="mb-4 theme-panel p-3">
+              <h2 className="text-lg font-semibold theme-muted mb-1">
                 {report.table_name}
               </h2>
-              <p className="text-sm text-slate-400">
+              <p className="text-sm theme-muted">
                 {report.profile.row_count.toLocaleString()} rows,{" "}
                 {report.profile.columns.length} columns
               </p>
@@ -328,16 +321,16 @@ export default function Page() {
             return (
               <div key={si} className="mb-6">
                 <div className="flex items-center gap-2 mb-3">
-                  <div className="h-6 w-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white">
+                  <div className="h-6 w-6 rounded-full theme-chip flex items-center justify-center text-xs font-bold">
                     {si + 1}
                   </div>
-                  <h2 className="text-base font-semibold text-slate-200">
+                  <h2 className="text-base font-semibold theme-muted">
                     {step.headline}
                   </h2>
                 </div>
 
                 {step.warnings.length > 0 && (
-                  <div className="mb-2 text-xs text-amber-400">
+                  <div className="mb-2 text-xs theme-accent">
                     {step.warnings.map((w, wi) => (
                       <div key={wi}>&#9888; {w}</div>
                     ))}
@@ -351,10 +344,10 @@ export default function Page() {
                   return (
                     <div
                       key={view.id}
-                      className="mb-4 rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
+                      className="mb-4 theme-panel p-4 flex flex-col gap-2"
                     >
                       {view.spec.title && (
-                        <h3 className="text-sm font-semibold text-slate-200 m-0">
+                        <h3 className="text-sm font-semibold theme-muted m-0">
                           {view.spec.title}
                         </h3>
                       )}
@@ -385,11 +378,11 @@ export default function Page() {
 
                 {/* Findings */}
                 {step.findings.length > 0 && (
-                  <div className="mt-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
-                    <h4 className="text-xs font-semibold text-slate-300 mb-1.5">
+                  <div className="mt-3 p-3 theme-panel">
+                    <h4 className="text-sm font-semibold theme-muted mb-1.5">
                       Insights
                     </h4>
-                    <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
+                    <ul className="text-sm theme-muted list-disc list-inside space-y-1">
                       {step.findings.map((f, fi) => (
                         <li key={fi}>{f}</li>
                       ))}
