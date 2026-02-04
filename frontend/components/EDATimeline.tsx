@@ -39,17 +39,24 @@ export default function EDATimeline({ steps, progress, status }: Props) {
       )}
 
       {/* Step list */}
-      <div className="space-y-2">
+      <div className="space-y-3">
         {steps.map((step, i) => (
           <div key={i} className="flex items-start gap-2">
             <div className="mt-0.5 h-4 w-4 rounded-full bg-blue-700 flex items-center justify-center text-[10px] font-bold text-white shrink-0">
               {i + 1}
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-xs font-medium text-slate-300">
                 {STEP_LABELS[step.step_type] || step.step_type}
               </div>
-              <div className="text-[10px] text-slate-500">{step.headline}</div>
+              <div className="text-[10px] text-slate-500 mt-0.5">{step.headline}</div>
+              {step.findings.length > 0 && (
+                <ul className="mt-1 space-y-0.5 text-[10px] text-slate-400 list-disc list-inside">
+                  {step.findings.map((f, fi) => (
+                    <li key={fi} className="leading-tight">{f}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         ))}

@@ -57,7 +57,7 @@ export function PromptBar({ onSubmit, placeholder, disabled = false }: Props) {
         disabled={disabled || !text.trim()}
         className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800 disabled:opacity-60"
       >
-        Generate
+        Submit
       </button>
     </form>
   );

@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ViewResult, StepResult } from "@/types/chart";
+import type { ViewResult } from "@/types/chart";
+
+export type StepSegment = {
+  step_type: string;
+  views: ViewResult[];
+  headline: string;
+  findings: string[];
+  complete: boolean;
+};
 
 export type SSEState = {
   status: "idle" | "connecting" | "streaming" | "complete" | "error";
-  views: Map<string, ViewResult>;
-  steps: StepResult[];
+  segments: StepSegment[];
   progress: string;
   error: string | null;
   runId: string | null;
@@ -14,12 +21,13 @@ type SSEEventData = Record<string, any>;
 
 /**
  * Custom hook for consuming SSE events from the EDA streaming endpoint.
+ *
+ * Views are grouped into step segments for notebook-style sequential rendering.
  */
 export function useSSE() {
   const [state, setState] = useState<SSEState>({
     status: "idle",
-    views: new Map(),
-    steps: [],
+    segments: [],
     progress: "",
     error: null,
     runId: null,
@@ -40,8 +48,7 @@ export function useSSE() {
 
       setState({
         status: "connecting",
-        views: new Map(),
-        steps: [],
+        segments: [],
         progress: "Connecting...",
         error: null,
         runId,
@@ -64,9 +71,10 @@ export function useSSE() {
         const data: SSEEventData = JSON.parse(e.data);
         setState((prev) => ({
           ...prev,
-          progress: data.stage === "profile_complete"
-            ? `Profiled ${data.columns} columns, ${data.row_count} rows`
-            : data.stage || "Processing...",
+          progress:
+            data.stage === "profile_complete"
+              ? `Profiled ${data.columns} columns, ${data.row_count} rows`
+              : data.stage || "Processing...",
         }));
       });
 
@@ -75,6 +83,16 @@ export function useSSE() {
         setState((prev) => ({
           ...prev,
           progress: `Running ${data.step_type?.replace(/_/g, " ")}...`,
+          segments: [
+            ...prev.segments,
+            {
+              step_type: data.step_type,
+              views: [],
+              headline: "",
+              findings: [],
+              complete: false,
+            },
+          ],
         }));
       });
 
@@ -89,25 +107,38 @@ export function useSSE() {
       es.addEventListener("view_ready", (e: MessageEvent) => {
         const view: ViewResult = JSON.parse(e.data);
         setState((prev) => {
-          const next = new Map(prev.views);
-          next.set(view.id, view);
-          return { ...prev, views: next };
+          const segments = [...prev.segments];
+          if (segments.length === 0) {
+            // Fallback: no step_started yet — create an implicit segment
+            segments.push({
+              step_type: "analysis",
+              views: [view],
+              headline: "",
+              findings: [],
+              complete: false,
+            });
+          } else {
+            const last = { ...segments[segments.length - 1] };
+            last.views = [...last.views, view];
+            segments[segments.length - 1] = last;
+          }
+          return { ...prev, segments };
         });
       });
 
       es.addEventListener("step_summary", (e: MessageEvent) => {
         const data: SSEEventData = JSON.parse(e.data);
-        const step: StepResult = {
-          step_type: data.step_type,
-          headline: data.headline,
-          views: [], // We'll associate views separately
-          findings: data.findings || [],
-          warnings: [],
-        };
-        setState((prev) => ({
-          ...prev,
-          steps: [...prev.steps, step],
-        }));
+        setState((prev) => {
+          const segments = [...prev.segments];
+          if (segments.length > 0) {
+            const last = { ...segments[segments.length - 1] };
+            last.headline = data.headline || "";
+            last.findings = data.findings || [];
+            last.complete = true;
+            segments[segments.length - 1] = last;
+          }
+          return { ...prev, segments };
+        });
       });
 
       es.addEventListener("warning", (e: MessageEvent) => {

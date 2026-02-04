@@ -3,15 +3,20 @@ import { useEffect, useRef, useState } from "react";
 import { UploadZone } from "../components/UploadZone";
 import { PromptBar } from "../components/PromptBar";
 import { apiGetJSON, apiPostJSON, getSessionId } from "../lib/api";
-import TablesPanel from "@/components/TablesPanel";
 import RechartsCard from "@/components/charts/RechartsCard";
 import DataTable from "@/components/charts/DataTable";
-import EDATimeline from "@/components/EDATimeline";
 import { useSSE } from "@/lib/useSSE";
 import type { EDAReport, ViewResult } from "@/types/chart";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronDown, ChevronRight } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8000";
+
+const STEP_LABELS: Record<string, string> = {
+  quality_overview: "Quality Overview",
+  relationships: "Relationships",
+  outliers_segments: "Outliers & Segments",
+  query_driven: "Query Analysis",
+};
 
 export default function Page() {
   const [tables, setTables] = useState<any[]>([]);
@@ -19,7 +24,9 @@ export default function Page() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [useStreaming, setUseStreaming] = useState(true);
+  const [showTables, setShowTables] = useState(false);
   const tablesReq = useRef<number>(0);
+  const autoRunKey = useRef<string | null>(null);
 
   const { state: sseState, connect: sseConnect, close: sseClose } = useSSE();
 
@@ -31,10 +38,12 @@ export default function Page() {
       const next = r.tables || [];
       if (tablesReq.current !== reqId) return;
       setTables(next);
+      return next;
     } catch (e) {
       console.error(e);
       if (tablesReq.current !== reqId) return;
       setTables([]);
+      return [];
     }
   };
 
@@ -42,15 +51,16 @@ export default function Page() {
     refreshTables();
   }, []);
 
-  const onUploaded = () => {
-    refreshTables();
+  const onUploaded = async () => {
+    await refreshTables();
     setReport(null);
     setError(null);
     sseClose();
   };
 
-  const runEDA = async (query?: string) => {
-    if (tables.length === 0) {
+  const runEDA = async (query?: string, tablesOverride?: any[]) => {
+    const availableTables = tablesOverride ?? tables;
+    if (availableTables.length === 0) {
       setError("Upload a CSV file first.");
       return;
     }
@@ -66,7 +76,6 @@ export default function Page() {
       if (query) body.query = query;
 
       if (useStreaming) {
-        // Streaming mode: POST with ?stream=1, then connect SSE
         const res = await apiPostJSON<{ run_id: string; streaming: boolean }>(
           "/api/runs?stream=1",
           body
@@ -74,7 +83,6 @@ export default function Page() {
         if (res.streaming && res.run_id) {
           sseConnect(res.run_id, getSessionId(), API_BASE);
           connectedSSE = true;
-          // Keep pending until SSE completes
           return;
         }
       }
@@ -102,19 +110,32 @@ export default function Page() {
     }
   }, [sseState.status, sseState.error]);
 
+  useEffect(() => {
+    if (pending) return;
+    if (tables.length === 0) {
+      autoRunKey.current = null;
+      return;
+    }
+    if (report || sseState.segments.length > 0) return;
+    if (sseState.status === "connecting" || sseState.status === "streaming") return;
+
+    const key = tables
+      .map((t: any) => `${t.name || t.table_name || ""}:${t.rows ?? ""}`)
+      .join("|");
+    if (autoRunKey.current === key) return;
+    autoRunKey.current = key;
+    void runEDA(undefined, tables);
+  }, [tables, pending, report, sseState.status, sseState.segments.length]);
+
   const onPrompt = async (prompt: string) => {
     await runEDA(prompt);
   };
 
-  // Determine what to render: SSE streaming views or sync report
-  const isStreaming = sseState.status === "streaming" || sseState.status === "connecting";
-  const hasStreamedViews = sseState.views.size > 0;
-  const showStreamingUI = hasStreamedViews || isStreaming || sseState.status === "complete";
-
-  // Separate table views (summary stats) from chart views
-  const allStreamedViews = Array.from(sseState.views.values());
-  const summaryViews = allStreamedViews.filter((v) => v.spec.chart_type === "table");
-  const chartViews = allStreamedViews.filter((v) => v.spec.chart_type !== "table");
+  const isStreaming =
+    sseState.status === "streaming" || sseState.status === "connecting";
+  const hasSegments = sseState.segments.length > 0;
+  const showStreamingUI =
+    hasSegments || isStreaming || sseState.status === "complete";
 
   // Build views map for sync mode
   const syncViewsById = new Map<string, ViewResult>();
@@ -126,11 +147,9 @@ export default function Page() {
 
   return (
     <div style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <h1 style={{ fontSize: 28, marginBottom: 8, marginTop: 0, flex: 1 }}>
-          AI Data Vis
-        </h1>
-      </div>
+      <h1 style={{ fontSize: 28, marginBottom: 8, marginTop: 0 }}>
+        AI Data Vis
+      </h1>
 
       <UploadZone onUploaded={onUploaded} />
 
@@ -146,28 +165,36 @@ export default function Page() {
           <div className="flex-1">
             <PromptBar
               onSubmit={onPrompt}
-              placeholder="Ask a question about the data, or click Run EDA"
+              placeholder="Ask a question about the data"
               disabled={pending}
             />
           </div>
-          <button
-            onClick={() => runEDA()}
-            disabled={pending || tables.length === 0}
-            className="rounded-lg border border-blue-600 bg-blue-700 px-4 py-2.5 text-sm font-medium text-white hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shrink-0"
-          >
-            {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-            {pending ? "Running..." : "Run EDA"}
-          </button>
         </div>
 
-        <div
-          style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap" }}
-        >
-          <div style={{ flex: 1, minWidth: 260 }}>
-            <h3>Tables in session</h3>
-            <TablesPanel tables={tables} />
+        {/* Collapsible tables indicator */}
+        {tables.length > 0 && (
+          <button
+            onClick={() => setShowTables(!showTables)}
+            className="mt-2 flex items-center gap-1 text-xs text-slate-500 hover:text-slate-300"
+          >
+            {showTables ? (
+              <ChevronDown className="h-3 w-3" />
+            ) : (
+              <ChevronRight className="h-3 w-3" />
+            )}
+            {tables.length} table{tables.length !== 1 ? "s" : ""} in session
+          </button>
+        )}
+        {showTables && (
+          <div className="mt-1 text-xs text-slate-500 pl-4">
+            {tables.map((t: any, i: number) => (
+              <div key={i}>
+                {t.name || t.table_name || `Table ${i + 1}`}
+                {t.rows != null && ` (${t.rows} rows)`}
+              </div>
+            ))}
           </div>
-        </div>
+        )}
       </div>
 
       {/* Error display */}
@@ -177,115 +204,50 @@ export default function Page() {
         </div>
       )}
 
-      {/* SSE Streaming UI */}
+      {/* ============================================================
+          SSE Streaming UI — Notebook-style sequential layout
+          ============================================================ */}
       {showStreamingUI && (
-        <div className="mt-6 space-y-4">
-          {/* Top row: Timeline + Summary Statistics table */}
-          <div className="flex gap-4">
-            <div className="w-64 shrink-0">
-              <EDATimeline
-                steps={sseState.steps}
-                progress={sseState.progress}
-                status={sseState.status}
-              />
+        <div className="mt-6 space-y-6">
+          {/* Progress indicator */}
+          {isStreaming && (
+            <div className="flex items-center gap-2 text-sm text-blue-400">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span>{sseState.progress}</span>
             </div>
+          )}
+          {sseState.status === "complete" && (
+            <div className="text-sm text-green-400">{sseState.progress}</div>
+          )}
 
-            <div className="flex-1 min-w-0">
-              {summaryViews.length > 0 ? (
-                summaryViews.map((view) => (
-                  <div
-                    key={view.id}
-                    className="rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
-                  >
-                    {view.spec.title && (
-                      <h3 className="text-sm font-semibold text-slate-200 m-0">
-                        {view.spec.title}
-                      </h3>
-                    )}
-                    <div className="overflow-auto max-h-[600px]">
-                      <DataTable spec={view.spec} />
-                    </div>
-                    {view.explanation && (
-                      <p className="text-xs text-slate-500 mt-1 m-0">
-                        {view.explanation}
-                      </p>
-                    )}
+          {/* Step segments — rendered sequentially like a notebook */}
+          {sseState.segments.map((segment, si) => {
+            const tableViews = segment.views.filter(
+              (v) => v.spec.chart_type === "table"
+            );
+            const chartViews = segment.views.filter(
+              (v) => v.spec.chart_type !== "table"
+            );
+
+            return (
+              <div key={si}>
+                {/* Step header */}
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-6 w-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white shrink-0">
+                    {si + 1}
                   </div>
-                ))
-              ) : isStreaming ? (
-                <div className="flex items-center justify-center py-12 text-slate-500">
-                  <Loader2 className="h-6 w-6 animate-spin mr-2" />
-                  <span>Generating charts...</span>
+                  <h2 className="text-base font-semibold text-slate-200">
+                    {segment.complete && segment.headline
+                      ? segment.headline
+                      : STEP_LABELS[segment.step_type] || segment.step_type}
+                  </h2>
+                  {!segment.complete && (
+                    <Loader2 className="h-4 w-4 animate-spin text-blue-400" />
+                  )}
                 </div>
-              ) : null}
-            </div>
-          </div>
 
-          {/* Chart views grid (below the top row) */}
-          {chartViews.length > 0 && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {chartViews.map((view) => (
-                <div key={view.id} className="min-h-[320px]">
-                  <RechartsCard
-                    spec={view.spec}
-                    explanation={view.explanation}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Synchronous Report (fallback when not streaming) */}
-      {report && !showStreamingUI && (
-        <div className="mt-6">
-          {/* Profile summary */}
-          {report.profile && (
-            <div className="mb-4 p-3 rounded-lg bg-slate-900 border border-slate-800">
-              <h2 className="text-lg font-semibold text-slate-200 mb-1">
-                {report.table_name}
-              </h2>
-              <p className="text-sm text-slate-400">
-                {report.profile.row_count.toLocaleString()} rows,{" "}
-                {report.profile.columns.length} columns
-                {report.profile.visualization_hints?.summary && (
-                  <>
-                    {" "}&mdash;{" "}
-                    {report.profile.visualization_hints.summary.numeric_columns} numeric,{" "}
-                    {report.profile.visualization_hints.summary.categorical_columns} categorical
-                    {report.profile.visualization_hints.summary.has_temporal_data && ", has temporal data"}
-                  </>
-                )}
-              </p>
-            </div>
-          )}
-
-          {/* Steps with their views */}
-          {report.steps.map((step, si) => (
-            <div key={si} className="mb-6">
-              <div className="flex items-center gap-2 mb-3">
-                <div className="h-6 w-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white">
-                  {si + 1}
-                </div>
-                <h2 className="text-base font-semibold text-slate-200">
-                  {step.headline}
-                </h2>
-              </div>
-
-              {step.warnings.length > 0 && (
-                <div className="mb-2 text-xs text-amber-400">
-                  {step.warnings.map((w, wi) => (
-                    <div key={wi}>&#9888; {w}</div>
-                  ))}
-                </div>
-              )}
-
-              {/* Summary tables — full width, height-capped */}
-              {step.views.map((viewId) => {
-                const view = syncViewsById.get(viewId);
-                if (!view || view.spec.chart_type !== "table") return null;
-                return (
+                {/* Summary tables — full width */}
+                {tableViews.map((view) => (
                   <div
                     key={view.id}
                     className="mb-4 rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
@@ -298,40 +260,145 @@ export default function Page() {
                     <div className="overflow-auto max-h-[600px]">
                       <DataTable spec={view.spec} />
                     </div>
-                    {view.explanation && (
-                      <p className="text-xs text-slate-500 mt-1 m-0">
-                        {view.explanation}
-                      </p>
-                    )}
                   </div>
-                );
-              })}
+                ))}
 
-              {/* Chart views — 2-col grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {step.views.map((viewId) => {
+                {/* Chart views — 2-col grid */}
+                {chartViews.length > 0 && (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {chartViews.map((view) => (
+                      <div key={view.id} className="min-h-[320px]">
+                        <RechartsCard
+                          spec={view.spec}
+                          explanation={view.explanation}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Findings / Insights */}
+                {segment.complete && segment.findings.length > 0 && (
+                  <div className="mt-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
+                    <h4 className="text-xs font-semibold text-slate-300 mb-1.5">
+                      Insights
+                    </h4>
+                    <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
+                      {segment.findings.map((f, fi) => (
+                        <li key={fi}>{f}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ============================================================
+          Synchronous Report (fallback when not streaming)
+          ============================================================ */}
+      {report && !showStreamingUI && (
+        <div className="mt-6">
+          {/* Profile summary */}
+          {report.profile && (
+            <div className="mb-4 p-3 rounded-lg bg-slate-900 border border-slate-800">
+              <h2 className="text-lg font-semibold text-slate-200 mb-1">
+                {report.table_name}
+              </h2>
+              <p className="text-sm text-slate-400">
+                {report.profile.row_count.toLocaleString()} rows,{" "}
+                {report.profile.columns.length} columns
+              </p>
+            </div>
+          )}
+
+          {/* Steps with their views — same notebook layout */}
+          {report.steps.map((step, si) => {
+            const tableViewIds = step.views.filter((id) => {
+              const v = syncViewsById.get(id);
+              return v && v.spec.chart_type === "table";
+            });
+            const chartViewIds = step.views.filter((id) => {
+              const v = syncViewsById.get(id);
+              return v && v.spec.chart_type !== "table";
+            });
+
+            return (
+              <div key={si} className="mb-6">
+                <div className="flex items-center gap-2 mb-3">
+                  <div className="h-6 w-6 rounded-full bg-blue-700 flex items-center justify-center text-xs font-bold text-white">
+                    {si + 1}
+                  </div>
+                  <h2 className="text-base font-semibold text-slate-200">
+                    {step.headline}
+                  </h2>
+                </div>
+
+                {step.warnings.length > 0 && (
+                  <div className="mb-2 text-xs text-amber-400">
+                    {step.warnings.map((w, wi) => (
+                      <div key={wi}>&#9888; {w}</div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Summary tables — full width */}
+                {tableViewIds.map((viewId) => {
                   const view = syncViewsById.get(viewId);
-                  if (!view || view.spec.chart_type === "table") return null;
+                  if (!view) return null;
                   return (
-                    <div key={view.id} className="min-h-[320px]">
-                      <RechartsCard
-                        spec={view.spec}
-                        explanation={view.explanation}
-                      />
+                    <div
+                      key={view.id}
+                      className="mb-4 rounded-xl border border-slate-800 bg-slate-950 p-4 flex flex-col gap-2"
+                    >
+                      {view.spec.title && (
+                        <h3 className="text-sm font-semibold text-slate-200 m-0">
+                          {view.spec.title}
+                        </h3>
+                      )}
+                      <div className="overflow-auto max-h-[600px]">
+                        <DataTable spec={view.spec} />
+                      </div>
                     </div>
                   );
                 })}
-              </div>
 
-              {step.findings.length > 0 && (
-                <div className="mt-2 text-xs text-slate-400 space-y-1">
-                  {step.findings.map((f, fi) => (
-                    <div key={fi}>{f}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
+                {/* Chart views — 2-col grid */}
+                {chartViewIds.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {chartViewIds.map((viewId) => {
+                      const view = syncViewsById.get(viewId);
+                      if (!view) return null;
+                      return (
+                        <div key={view.id} className="min-h-[320px]">
+                          <RechartsCard
+                            spec={view.spec}
+                            explanation={view.explanation}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Findings */}
+                {step.findings.length > 0 && (
+                  <div className="mt-3 p-3 rounded-lg bg-slate-900/50 border border-slate-800">
+                    <h4 className="text-xs font-semibold text-slate-300 mb-1.5">
+                      Insights
+                    </h4>
+                    <ul className="text-xs text-slate-400 list-disc list-inside space-y-1">
+                      {step.findings.map((f, fi) => (
+                        <li key={fi}>{f}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
