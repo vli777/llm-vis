@@ -128,6 +128,10 @@ class ViewResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 class StepType(str, Enum):
+    summary_stats = "summary_stats"
+    analysis_intents = "analysis_intents"
+    intent_selection = "intent_selection"
+    intent_views = "intent_views"
     quality_overview = "quality_overview"
     relationships = "relationships"
     outliers_segments = "outliers_segments"
@@ -140,6 +144,7 @@ class StepResult(BaseModel):
     views: List[str] = Field(default_factory=list)        # view IDs
     findings: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
+    decision_trace: Optional[str] = None
 
 
 class DecisionRecord(BaseModel):

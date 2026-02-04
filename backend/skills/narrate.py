@@ -36,7 +36,11 @@ Return a JSON object with:
 - "headline": string — a one-sentence summary with concrete numbers (e.g., "Revenue ranges from $50K to $2.1M with most companies under $500K")
 - "findings": string[] — 2-4 bullet-point findings, each referencing specific values or patterns from the data
 
-Keep it factual. Reference actual numbers from the profile and chart data.
+Rules:
+- Do NOT mention charts, chart types, bins, or number of data points.
+- Focus on dataset insights only (ranges, trends, top categories, relationships).
+- Keep it factual and grounded in values shown.
+
 Return ONLY valid JSON. No prose, no code fences."""
 
 _PLAN_SYSTEM = """You are a data analysis planner deciding what to explore next.
@@ -78,13 +82,8 @@ def summarize_step(
         for v in views:
             summary: Dict[str, Any] = {
                 "title": v.spec.title,
-                "chart_type": v.spec.chart_type.value,
-                "data_points": len(v.data_inline),
                 "fields": v.plan.fields_used,
             }
-            # Include top/bottom value for bar charts
-            if v.data_inline and v.spec.chart_type.value == "bar":
-                summary["top"] = v.data_inline[0]
             view_summaries.append(summary)
 
         user_msg = json.dumps({

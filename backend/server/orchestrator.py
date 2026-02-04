@@ -41,16 +41,18 @@ from skills.classify import classify_columns
 from skills.narrate import plan_next_actions, summarize_step
 from skills.profile import build_profile
 from skills.recommend import generate_candidates, score_and_select
-from skills.intent import infer_analysis_intents
+from skills.intent import infer_analysis_intents, select_intent
+from skills.summary import summarize_dataset, build_summary_stats_view
 from skills.validate import deterministic_fallback, validate_plan, validate_view
 
 logger = logging.getLogger("uvicorn.error")
 
 # Default analysis pipeline
 DEFAULT_POLICY: List[StepType] = [
-    StepType.quality_overview,
-    StepType.relationships,
-    StepType.outliers_segments,
+    StepType.summary_stats,
+    StepType.analysis_intents,
+    StepType.intent_selection,
+    StepType.intent_views,
 ]
 
 # Budget per step (max charts generated per step)
@@ -97,21 +99,76 @@ def run_eda_sync(
     all_view_results: List[ViewResult] = []
     total_views = 0
 
-    # Build the step pipeline: prepend query_driven if a query was given
+    # Build the step pipeline: insert query_driven after intent_selection
     pipeline = list(DEFAULT_POLICY)
     if query:
-        pipeline.insert(0, StepType.query_driven)
+        try:
+            idx = pipeline.index(StepType.intent_selection)
+            pipeline.insert(idx + 1, StepType.query_driven)
+        except ValueError:
+            pipeline.append(StepType.query_driven)
+
+    intent_texts: List[str] = []
 
     # Step 2: Run each analysis step
-    for step_type in pipeline:
-        if total_views >= budget:
+    for step_idx, step_type in enumerate(pipeline):
+        if total_views >= budget and step_type not in (
+            StepType.summary_stats, StepType.analysis_intents
+        ):
             break
+
+        if step_type == StepType.summary_stats:
+            summary = summarize_dataset(profile)
+            summary_view = build_summary_stats_view(df, profile)
+            append_view(report.run_id, summary_view)
+            step_result = StepResult(
+                step_type=step_type,
+                headline=summary["headline"],
+                views=[summary_view.id],
+                findings=summary["findings"],
+            )
+            report.steps.append(step_result)
+            continue
+
+        if step_type == StepType.analysis_intents:
+            if report.analysis_insights is None:
+                report.analysis_insights = infer_analysis_intents(profile)
+            intents = report.analysis_insights.intents if report.analysis_insights else []
+            intent_texts = [i.title for i in intents] + [f for i in intents for f in i.fields]
+            step_result = StepResult(
+                step_type=step_type,
+                headline="Analysis intents derived from dataset structure",
+                findings=[i.title for i in intents],
+            )
+            report.steps.append(step_result)
+            continue
+
+        if step_type == StepType.intent_selection:
+            if report.analysis_insights is None:
+                report.analysis_insights = infer_analysis_intents(profile)
+            selection = select_intent(report.analysis_insights, query=query or "")
+            selected_title = selection.get("selected_title") or "Selected intent"
+            selected_fields = selection.get("fields") or []
+            intent_texts = [selected_title] + selected_fields
+            step_result = StepResult(
+                step_type=step_type,
+                headline="Selected next analysis intent",
+                findings=[selected_title],
+                decision_trace=selection.get("rationale") or None,
+            )
+            report.steps.append(step_result)
+            continue
 
         step_budget = min(STEP_BUDGET, budget - total_views)
         logger.info("Step: %s (budget=%d)", step_type.value, step_budget)
 
         # Generate candidates
-        candidates = generate_candidates(profile, step_type, query=query or "")
+        candidates = generate_candidates(
+            profile,
+            step_type,
+            query=query or "",
+            intents=intent_texts,
+        )
         logger.info("  Generated %d candidates", len(candidates))
 
         # Select best
@@ -181,9 +238,6 @@ def run_eda_sync(
 
         report.steps.append(step_result)
 
-        if step_type == StepType.quality_overview and report.analysis_insights is None:
-            report.analysis_insights = infer_analysis_intents(profile)
-
         # Record decision in timeline
         decision = plan_next_actions(profile, report.steps, all_view_results, budget - total_views)
         report.timeline.append(decision)
@@ -245,22 +299,108 @@ async def run_eda_async(
     all_view_results: List[ViewResult] = []
     total_views = 0
 
-    # Build the step pipeline: prepend query_driven if a query was given
+    # Build the step pipeline: insert query_driven after intent_selection
     pipeline = list(DEFAULT_POLICY)
     if query:
-        pipeline.insert(0, StepType.query_driven)
+        try:
+            idx = pipeline.index(StepType.intent_selection)
+            pipeline.insert(idx + 1, StepType.query_driven)
+        except ValueError:
+            pipeline.append(StepType.query_driven)
 
-    for step_type in pipeline:
-        if total_views >= budget:
+    intent_texts: List[str] = []
+
+    for step_idx, step_type in enumerate(pipeline):
+        if total_views >= budget and step_type not in (
+            StepType.summary_stats, StepType.analysis_intents
+        ):
             break
 
         step_budget = min(STEP_BUDGET, budget - total_views)
         await channel.emit(EVT_STEP_STARTED, {
             "step_type": step_type.value,
             "budget": step_budget,
+            "step_index": step_idx,
         })
 
-        candidates = generate_candidates(profile, step_type, query=query or "")
+        if step_type == StepType.summary_stats:
+            summary = summarize_dataset(profile)
+            summary_view = await loop.run_in_executor(_executor, build_summary_stats_view, df, profile)
+            append_view(report.run_id, summary_view)
+            step_result = StepResult(
+                step_type=step_type,
+                headline=summary["headline"],
+                views=[summary_view.id],
+                findings=summary["findings"],
+                warnings=[],
+            )
+            report.steps.append(step_result)
+            await channel.emit(EVT_VIEW_READY, summary_view.model_dump())
+            await channel.emit(EVT_STEP_SUMMARY, {
+                "step_type": step_type.value,
+                "headline": step_result.headline,
+                "view_count": 0,
+                "findings": step_result.findings,
+                "step_index": step_idx,
+            })
+            continue
+
+        if step_type == StepType.analysis_intents:
+            if report.analysis_insights is None:
+                report.analysis_insights = await loop.run_in_executor(_executor, infer_analysis_intents, profile)
+            intents = report.analysis_insights.intents if report.analysis_insights else []
+            intent_texts = [i.title for i in intents] + [f for i in intents for f in i.fields]
+            step_result = StepResult(
+                step_type=step_type,
+                headline="Analysis intents derived from dataset structure",
+                views=[],
+                findings=[i.title for i in intents],
+                warnings=[],
+            )
+            report.steps.append(step_result)
+            await channel.emit(EVT_ANALYSIS_INTENTS, report.analysis_insights.model_dump())
+            await channel.emit(EVT_STEP_SUMMARY, {
+                "step_type": step_type.value,
+                "headline": step_result.headline,
+                "view_count": 0,
+                "findings": step_result.findings,
+            })
+            continue
+
+        if step_type == StepType.intent_selection:
+            if report.analysis_insights is None:
+                report.analysis_insights = await loop.run_in_executor(_executor, infer_analysis_intents, profile)
+            selection = await loop.run_in_executor(
+                _executor, lambda: select_intent(report.analysis_insights, query=query or "")
+            )
+            selected_title = selection.get("selected_title") or "Selected intent"
+            selected_fields = selection.get("fields") or []
+            intent_texts = [selected_title] + selected_fields
+            step_result = StepResult(
+                step_type=step_type,
+                headline="Selected next analysis intent",
+                views=[],
+                findings=[selected_title],
+                warnings=[],
+                decision_trace=selection.get("rationale") or None,
+            )
+            report.steps.append(step_result)
+            await channel.emit(EVT_STEP_SUMMARY, {
+                "step_type": step_type.value,
+                "headline": step_result.headline,
+                "view_count": 0,
+                "findings": step_result.findings,
+                "decision_trace": step_result.decision_trace,
+                "step_index": step_idx,
+            })
+            continue
+
+        candidates = generate_candidates(
+            profile,
+            step_type,
+            query=query or "",
+            intents=intent_texts,
+        )
         selected = score_and_select(candidates, views_done, budget=step_budget)
 
         step_views: List[str] = []
@@ -328,11 +468,11 @@ async def run_eda_async(
             step_result.headline = narration.get("headline", step_result.headline)
             step_result.findings = narration.get("findings", step_result.findings)
 
-        report.steps.append(step_result)
+        if intent_texts:
+            trace = f"Decision trace: matched intents {', '.join(intent_texts[:3])}."
+            step_result.findings = [trace] + step_result.findings
 
-        if step_type == StepType.quality_overview and report.analysis_insights is None:
-            report.analysis_insights = await loop.run_in_executor(_executor, infer_analysis_intents, profile)
-            await channel.emit(EVT_ANALYSIS_INTENTS, report.analysis_insights.model_dump())
+        report.steps.append(step_result)
 
         # Record decision in timeline
         decision = plan_next_actions(profile, report.steps, all_view_results, budget - total_views)
@@ -343,6 +483,8 @@ async def run_eda_async(
             "headline": step_result.headline,
             "view_count": len(step_views),
             "findings": step_result.findings,
+            "decision_trace": step_result.decision_trace,
+            "step_index": step_idx,
         })
 
     save_run(report)

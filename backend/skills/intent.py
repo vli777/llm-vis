@@ -34,6 +34,22 @@ Rules:
 - Return ONLY valid JSON. No prose, no code fences.
 """
 
+_SELECT_SYSTEM = """You are an expert data analyst.
+Given a list of analysis intents, select the single best next intent to pursue.
+
+Return JSON:
+{
+  "selected_title": "string",
+  "rationale": "string",
+  "fields": ["col1", "col2"]
+}
+
+Rules:
+- Select exactly one intent.
+- The rationale should be one concise sentence.
+- Return ONLY valid JSON. No prose, no code fences.
+"""
+
 
 def infer_analysis_intents(profile: DataProfile) -> AnalysisInsights:
     """LLM-driven intent inference with heuristic fallback."""
@@ -49,6 +65,37 @@ def infer_analysis_intents(profile: DataProfile) -> AnalysisInsights:
             logger.warning("LLM intent reasoning unavailable, using heuristic fallback: %s", e)
             _llm_warn_logged = True
         return _heuristic_intents(profile)
+
+
+def select_intent(intents: AnalysisInsights, *, query: str = "") -> dict:
+    """Select the next intent to pursue."""
+    intent_list = intents.intents if intents else []
+    if not intent_list:
+        return {"selected_title": "Overview of distributions and missingness", "rationale": "Fallback intent.", "fields": []}
+
+    try:
+        from app.llm import chat_json
+
+        payload = {
+            "query": query,
+            "intents": [
+                {"title": i.title, "rationale": i.rationale, "fields": i.fields, "priority": i.priority}
+                for i in intent_list
+            ],
+        }
+        result = chat_json(_SELECT_SYSTEM, json.dumps(payload, default=str), max_tokens=400)
+        return {
+            "selected_title": str(result.get("selected_title") or intent_list[0].title),
+            "rationale": str(result.get("rationale") or ""),
+            "fields": list(result.get("fields") or []),
+        }
+    except Exception as e:
+        global _llm_warn_logged
+        if not _llm_warn_logged:
+            logger.warning("LLM intent selection unavailable, using heuristic fallback: %s", e)
+            _llm_warn_logged = True
+        top = sorted(intent_list, key=lambda i: i.priority or 0)[0]
+        return {"selected_title": top.title, "rationale": top.rationale, "fields": top.fields}
 
 
 def _profile_payload(profile: DataProfile) -> Dict[str, Any]:

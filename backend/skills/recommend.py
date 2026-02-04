@@ -104,15 +104,6 @@ def _quality_candidates(profile: DataProfile) -> List[ViewPlan]:
             tags=["overview", "quality", "missingness"],
         ))
 
-    # Table summary
-    plans.append(ViewPlan(
-        chart_type=ChartType.table,
-        encoding=ChartEncoding(),
-        intent="Dataset summary statistics",
-        fields_used=[c.name for c in profile.columns[:10]],
-        tags=["overview", "summary"],
-    ))
-
     return plans
 
 
@@ -420,14 +411,39 @@ def generate_candidates(
     step_type: StepType,
     *,
     query: str = "",
+    intents: Optional[List[str]] = None,
 ) -> List[ViewPlan]:
     """Generate candidate ViewPlans for a given analysis step."""
     if step_type == StepType.query_driven:
         return _query_driven_candidates(profile, query=query)
+    if step_type == StepType.intent_views:
+        all_candidates = (
+            _quality_candidates(profile)
+            + _relationship_candidates(profile)
+            + _outlier_candidates(profile)
+        )
+        return _intent_filter(all_candidates, intents or [])
     gen = _GENERATORS.get(step_type)
     if gen is None:
         return []
-    return gen(profile)
+    candidates = gen(profile)
+    if intents:
+        return _intent_filter(candidates, intents)
+    return candidates
+
+
+def _intent_filter(candidates: List[ViewPlan], intents: List[str]) -> List[ViewPlan]:
+    intent_text = " ".join(intents).lower()
+    filtered: List[ViewPlan] = []
+    for plan in candidates:
+        intent_match = any(
+            field.lower() in intent_text or field.lower() in (plan.intent or "").lower()
+            for field in plan.fields_used
+        )
+        tag_match = any(tag in intent_text for tag in plan.tags)
+        if intent_match or tag_match:
+            filtered.append(plan)
+    return filtered
 
 
 def score_and_select(
