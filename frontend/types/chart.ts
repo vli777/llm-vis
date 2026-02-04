@@ -103,10 +103,34 @@ export type DataProfile = {
   visualization_hints?: Record<string, any>;
 };
 
+export type TargetSpec = {
+  column?: string | null;
+  task_type: string;
+  confidence: number;
+  reason?: string;
+};
+
+export type TargetAssociation = {
+  feature: string;
+  metric: string;
+  score: number;
+  direction?: string;
+  details?: Record<string, any>;
+};
+
+export type TargetInsights = {
+  target: TargetSpec;
+  distribution?: Record<string, any>;
+  associations: TargetAssociation[];
+  missingness: TargetAssociation[];
+  warnings: string[];
+};
+
 export type EDAReport = {
   run_id: string;
   table_name: string;
   profile?: DataProfile;
+  target_insights?: TargetInsights;
   steps: StepResult[];
   views: ViewResult[];
   timeline: any[];

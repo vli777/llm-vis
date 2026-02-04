@@ -31,6 +31,7 @@ from server.sse import (
     EVT_RUN_STARTED,
     EVT_STEP_STARTED,
     EVT_STEP_SUMMARY,
+    EVT_TARGET_INSIGHTS,
     EVT_VIEW_PLANNED,
     EVT_VIEW_READY,
     EVT_WARNING,
@@ -40,6 +41,7 @@ from skills.classify import classify_columns
 from skills.narrate import plan_next_actions, summarize_step
 from skills.profile import build_profile
 from skills.recommend import generate_candidates, score_and_select
+from skills.target import run_target_analysis
 from skills.validate import deterministic_fallback, validate_plan, validate_view
 
 logger = logging.getLogger("uvicorn.error")
@@ -88,6 +90,7 @@ def run_eda_sync(
     profile = build_profile(df, table_name)
     profile = classify_columns(profile)
     report.profile = profile
+    report.target_insights = run_target_analysis(df, profile)
     logger.info("Profile complete: %d columns, %d rows", len(profile.columns), profile.row_count)
 
     # Track all views for deduplication
@@ -230,11 +233,14 @@ async def run_eda_async(
     profile = await loop.run_in_executor(_executor, build_profile, df, table_name)
     profile = await loop.run_in_executor(_executor, classify_columns, profile)
     report.profile = profile
+    report.target_insights = await loop.run_in_executor(_executor, run_target_analysis, df, profile)
     await channel.emit(EVT_PROGRESS, {
         "stage": "profile_complete",
         "columns": len(profile.columns),
         "row_count": profile.row_count,
     })
+    if report.target_insights:
+        await channel.emit(EVT_TARGET_INSIGHTS, report.target_insights.model_dump())
 
     views_done: List[ViewPlan] = []
     all_view_results: List[ViewResult] = []

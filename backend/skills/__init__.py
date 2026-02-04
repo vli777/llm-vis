@@ -1,1 +1,1 @@
-# backend/skills — analysis skills: profile, recommend, build_view, validate, narrate, retrieve
+# backend/skills — analysis skills: profile, recommend, build_view, validate, narrate, target

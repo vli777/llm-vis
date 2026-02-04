@@ -7,6 +7,7 @@ import pandas as pd
 from pydantic import ValidationError
 
 from skills.profile import dataset_profile, detect_column_role as _detect_column_role, suggest_chart_types as _suggest_chart_types
+from skills.target import infer_task_and_target, run_target_analysis
 from app.models import Plan, Operation
 from app.llm_loader import supports_native_structured_output, get_provider_name
 
@@ -330,6 +331,31 @@ class TestPydanticModels:
 
         # Check that both type and intent work
         assert plan.type == "chart"
+
+
+class TestTargetAnalysis:
+    def test_infer_target_classification(self):
+        df = pd.DataFrame({
+            "feature_a": [1, 2, 3, 4, 5],
+            "label": ["yes", "no", "yes", "no", "yes"],
+        })
+        from skills.profile import build_profile
+        prof_model = build_profile(df, "t")
+        target = infer_task_and_target(prof_model)
+        assert target.column == "label"
+        assert target.task_type == "classification"
+
+    def test_target_associations_regression(self):
+        df = pd.DataFrame({
+            "price": [10, 20, 30, 40, 50, 60],
+            "units": [1, 2, 3, 4, 5, 6],
+            "category": ["A", "A", "B", "B", "C", "C"],
+        })
+        from skills.profile import build_profile
+        prof_model = build_profile(df, "t")
+        insights = run_target_analysis(df, prof_model)
+        assert insights.target.column in {"price", "units"}
+        assert len(insights.associations) >= 1
 
 
 class TestProviderDetection:
