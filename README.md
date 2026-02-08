@@ -1,6 +1,6 @@
-# AutoEDA (Next.js + FastAPI + Vega-Lite)
+# Auto-EDA (Next.js + FastAPI + Vega-Lite)
 
-Generate interactive visualizations from natural language using LLMs. Upload your data, describe what you want to see, and get a chart back instantly.
+Agent-driven, autonomous EDA from a data upload. Upload your dataset, describe what you want to learn, and the system profiles the data, reasons about intent, and returns the best visual explanation.
 
 <img width="1087" height="727" alt="Screenshot 2025-12-20 013125" src="https://github.com/user-attachments/assets/7502a23d-f896-4858-b775-3e18815f3192" />
 
@@ -16,6 +16,14 @@ Example Prompt: ARR vs Valuation (log)
 - **Multi-Provider Support**: Works with Groq, OpenAI, or NVIDIA with provider-specific optimizations
 - **Rich Context**: LLM receives statistical profiles, data distributions, and visualization hints for smarter suggestions
 - **Interactive Charts**: Powered by Vega-Lite with tooltips, zooming, and responsive design
+
+## High-Level Flow
+
+1. **Upload**: User uploads a CSV in the UI.
+2. **Profile**: Backend computes dataset stats, data types, distributions, and column roles.
+3. **Agent Reasoning**: An LLM agent interprets the request, uses the profile as context, and chooses a visualization approach.
+4. **Spec Generation**: The agent outputs a validated Vega-Lite spec plus any data transforms needed.
+5. **Render**: Frontend renders the interactive chart and supports follow-up prompts for iterative EDA.
 
 ## Quickstart
 ### Backend
