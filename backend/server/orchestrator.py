@@ -22,8 +22,7 @@ from core.models import (
     ViewPlan,
     ViewResult,
 )
-from core.storage import append_view, create_run, save_run, get_latest_run_for_table, get_views, set_run_views
-from core.utils import tokenize
+from core.storage import append_view, create_run, save_run
 from server.sse import (
     SSEChannel,
     EVT_ERROR,
@@ -39,7 +38,7 @@ from server.sse import (
 )
 from skills.build_view import build_view
 from skills.classify import classify_columns
-from skills.narrate import plan_next_actions, summarize_step
+from skills.narrate import summarize_step
 from skills.profile import build_profile
 from skills.recommend import generate_candidates, score_and_select
 from skills.intent import infer_analysis_intents
@@ -115,10 +114,8 @@ def run_eda_sync(
     3. Return the complete EDAReport
     """
     if query:
-        existing = get_latest_run_for_table(session_id, table_name)
-        if existing and _query_matches_report(query, existing):
-            logger.info("Reusing existing run %s for query", existing.run_id)
-            return existing
+        # Queries should run fresh to avoid replaying prior charts.
+        logger.info("Running query-specific analysis (no reuse): %s", query)
     # Create run
     report = create_run(session_id, table_name)
     logger.info("EDA run %s started for table '%s' (%d rows)", report.run_id, table_name, len(df))
@@ -134,8 +131,8 @@ def run_eda_sync(
     all_view_results: List[ViewResult] = []
     total_views = 0
 
-    # Build the step pipeline (query handled as first intent if provided)
-    pipeline = list(DEFAULT_POLICY)
+    # Build the step pipeline
+    pipeline = [StepType.query_driven] if query else list(DEFAULT_POLICY)
 
     intent_texts: List[str] = []
 
@@ -173,8 +170,6 @@ def run_eda_sync(
                 {"title": i.title, "fields": i.fields or []}
                 for i in intents
             ]
-            if query:
-                intent_queue = [{"title": f"Query: {query}", "fields": []}] + intent_queue
             step_result = StepResult(
                 step_type=step_type,
                 headline="Analysis intents derived from dataset structure",
@@ -200,6 +195,7 @@ def run_eda_sync(
                     step_type,
                     query=query or "",
                     intents=intent_payload,
+                    context=_build_llm_context(report),
                 )
                 logger.info("  Generated %d candidates", len(candidates))
 
@@ -267,6 +263,74 @@ def run_eda_sync(
                 step_idx += 1
             continue
 
+        if step_type == StepType.query_driven:
+            step_budget = min(STEP_BUDGET, budget - total_views)
+            candidates = generate_candidates(
+                profile,
+                step_type,
+                query=query or "",
+                intents=None,
+                context=_build_llm_context(report),
+            )
+            selected = score_and_select(candidates, views_done, budget=step_budget)
+
+            step_views: List[str] = []
+            step_findings: List[str] = []
+            step_warnings: List[str] = []
+            step_view_results: List[ViewResult] = []
+
+            for plan in selected:
+                is_valid, plan_warnings = validate_plan(plan, profile)
+                step_warnings.extend(plan_warnings)
+                if not is_valid:
+                    logger.warning("  Plan invalid: %s — attempting fallback", plan_warnings)
+                    plan = deterministic_fallback(plan, profile)
+                    is_valid, plan_warnings = validate_plan(plan, profile)
+                    if not is_valid:
+                        logger.warning("  Fallback also invalid, skipping: %s", plan_warnings)
+                        continue
+
+                try:
+                    view = build_view(plan, df)
+                except Exception as e:
+                    logger.warning("  Build failed for '%s': %s", plan.intent, e)
+                    step_warnings.append(f"Build failed: {e}")
+                    continue
+
+                view_valid, view_warnings = validate_view(view)
+                step_warnings.extend(view_warnings)
+                if not view_valid:
+                    logger.warning("  View invalid: %s", view_warnings)
+                    continue
+
+                append_view(report.run_id, view)
+                step_views.append(view.id)
+                step_view_results.append(view)
+                views_done.append(plan)
+                all_view_results.append(view)
+                total_views += 1
+
+                step_findings.append(view.explanation)
+
+            step_result = StepResult(
+                step_type=step_type,
+                headline=f"Query: {query}",
+                views=step_views,
+                findings=step_findings,
+                warnings=step_warnings,
+            )
+
+            if step_view_results:
+                narration = summarize_step(
+                    profile, step_result, step_view_results, context=_build_llm_context(report)
+                )
+                step_result.headline = narration.get("headline", step_result.headline)
+                step_result.findings = narration.get("findings", step_result.findings)
+
+            report.steps.append(step_result)
+            step_idx += 1
+            continue
+
         # Skip other step types in this intent-driven flow
         step_idx += 1
         continue
@@ -284,87 +348,6 @@ def run_eda_sync(
 # ---------------------------------------------------------------------------
 
 _executor = ThreadPoolExecutor(max_workers=2)
-
-
-# ---------------------------------------------------------------------------
-# Reuse prior analysis for repeated queries
-# ---------------------------------------------------------------------------
-
-def _query_matches_report(query: str, report: EDAReport) -> bool:
-    tokens = tokenize(query or "")
-    if len(tokens) < 2:
-        return False
-
-    def match_text(text: str) -> float:
-        text_tokens = set(tokenize(text or ""))
-        if not text_tokens:
-            return 0.0
-        overlap = len(text_tokens.intersection(tokens))
-        return overlap / max(1, len(set(tokens)))
-
-    # Check view intents/titles and step findings
-    for v in report.views:
-        score = max(match_text(v.plan.intent), match_text(v.spec.title))
-        if score >= 0.4:
-            return True
-
-    for step in report.steps:
-        if any(match_text(f) >= 0.4 for f in step.findings):
-            return True
-        if match_text(step.headline) >= 0.4:
-            return True
-
-    return False
-
-
-async def _emit_reused_run(
-    report: EDAReport,
-    channel: SSEChannel,
-    *,
-    table_name: str,
-    row_count: int,
-) -> None:
-    views_by_id = {v.id: v for v in report.views}
-    await channel.emit(EVT_RUN_STARTED, {
-        "run_id": report.run_id,
-        "table_name": table_name,
-        "row_count": row_count,
-    })
-    if report.profile:
-        await channel.emit(EVT_PROGRESS, {
-            "stage": "profile_complete",
-            "columns": len(report.profile.columns),
-            "row_count": report.profile.row_count,
-        })
-    if report.analysis_insights:
-        await channel.emit(EVT_ANALYSIS_INTENTS, report.analysis_insights.model_dump())
-
-    for idx, step in enumerate(report.steps):
-        await channel.emit(EVT_STEP_STARTED, {
-            "step_type": step.step_type.value,
-            "budget": 0,
-            "step_index": idx,
-        })
-        # Emit views for the step in stored order
-        for view_id in step.views:
-            view = views_by_id.get(view_id)
-            if view:
-                await channel.emit(EVT_VIEW_READY, view.model_dump())
-        await channel.emit(EVT_STEP_SUMMARY, {
-            "step_type": step.step_type.value,
-            "headline": step.headline,
-            "view_count": len(step.views),
-            "findings": step.findings,
-            "decision_trace": step.decision_trace,
-            "step_index": idx,
-        })
-
-    await channel.emit(EVT_RUN_COMPLETE, {
-        "run_id": report.run_id,
-        "total_views": len(report.views),
-        "total_steps": len(report.steps),
-    })
-    await channel.close()
 
 
 # ---------------------------------------------------------------------------
@@ -389,18 +372,8 @@ async def run_eda_async(
     loop = asyncio.get_event_loop()
 
     if query:
-        existing = get_latest_run_for_table(session_id, table_name)
-        if existing and _query_matches_report(query, existing):
-            report = create_run(session_id, table_name)
-            report.profile = existing.profile
-            report.steps = list(existing.steps)
-            report.views = list(existing.views)
-            report.timeline = list(existing.timeline)
-            report.analysis_insights = existing.analysis_insights
-            set_run_views(report.run_id, report.views)
-            save_run(report)
-            await _emit_reused_run(report, channel, table_name=table_name, row_count=len(df))
-            return report
+        # Queries should run fresh to avoid replaying prior charts.
+        logger.info("Running query-specific analysis (no reuse): %s", query)
 
     report = create_run(session_id, table_name)
     await channel.emit(EVT_RUN_STARTED, {
@@ -423,8 +396,8 @@ async def run_eda_async(
     all_view_results: List[ViewResult] = []
     total_views = 0
 
-    # Build the step pipeline (query handled as first intent if provided)
-    pipeline = list(DEFAULT_POLICY)
+    # Build the step pipeline
+    pipeline = [StepType.query_driven] if query else list(DEFAULT_POLICY)
 
     step_idx = 0
     intent_queue: List[dict] = []
@@ -478,8 +451,6 @@ async def run_eda_async(
                 {"title": i.title, "fields": i.fields or []}
                 for i in intents
             ]
-            if query:
-                intent_queue = [{"title": f"Query: {query}", "fields": []}] + intent_queue
             step_result = StepResult(
                 step_type=step_type,
                 headline="Analysis intents derived from dataset structure",
@@ -519,6 +490,7 @@ async def run_eda_async(
                     step_type,
                     query=query or "",
                     intents=intent_payload,
+                    context=_build_llm_context(report),
                 )
                 selected = score_and_select(candidates, views_done, budget=step_budget)
 
@@ -595,6 +567,97 @@ async def run_eda_async(
                     "step_index": step_idx,
                 })
                 step_idx += 1
+            continue
+
+        if step_type == StepType.query_driven:
+            step_budget = min(STEP_BUDGET, budget - total_views)
+            await channel.emit(EVT_STEP_STARTED, {
+                "step_type": step_type.value,
+                "budget": step_budget,
+                "step_index": step_idx,
+            })
+
+            candidates = generate_candidates(
+                profile,
+                step_type,
+                query=query or "",
+                intents=None,
+                context=_build_llm_context(report),
+            )
+            selected = score_and_select(candidates, views_done, budget=step_budget)
+
+            step_views: List[str] = []
+            step_findings: List[str] = []
+            step_warnings: List[str] = []
+            step_view_results: List[ViewResult] = []
+
+            for plan in selected:
+                is_valid, plan_warnings = validate_plan(plan, profile)
+                step_warnings.extend(plan_warnings)
+                if not is_valid:
+                    plan = deterministic_fallback(plan, profile)
+                    is_valid, plan_warnings = validate_plan(plan, profile)
+                    if not is_valid:
+                        for w in plan_warnings:
+                            await channel.emit(EVT_WARNING, {"message": w})
+                        continue
+
+                await channel.emit(EVT_VIEW_PLANNED, {
+                    "intent": plan.intent,
+                    "chart_type": plan.chart_type.value,
+                })
+
+                try:
+                    view = await loop.run_in_executor(_executor, build_view, plan, df)
+                except Exception as e:
+                    logger.warning("Build failed: %s", e)
+                    await channel.emit(EVT_WARNING, {"message": f"Build failed: {e}"})
+                    continue
+
+                view_valid, view_warnings = validate_view(view)
+                step_warnings.extend(view_warnings)
+                if not view_valid:
+                    for w in view_warnings:
+                        await channel.emit(EVT_WARNING, {"message": w})
+                    continue
+
+                append_view(report.run_id, view)
+                step_views.append(view.id)
+                step_view_results.append(view)
+                views_done.append(plan)
+                all_view_results.append(view)
+                total_views += 1
+
+                step_findings.append(view.explanation)
+                await channel.emit(EVT_VIEW_READY, view.model_dump())
+
+            step_result = StepResult(
+                step_type=step_type,
+                headline=f"Query: {query}",
+                views=step_views,
+                findings=step_findings,
+                warnings=step_warnings,
+            )
+
+            if step_view_results:
+                narration = await loop.run_in_executor(
+                    _executor, lambda: summarize_step(
+                        profile, step_result, step_view_results, context=_build_llm_context(report)
+                    ),
+                )
+                step_result.headline = narration.get("headline", step_result.headline)
+                step_result.findings = narration.get("findings", step_result.findings)
+
+            report.steps.append(step_result)
+            await channel.emit(EVT_STEP_SUMMARY, {
+                "step_type": step_type.value,
+                "headline": step_result.headline,
+                "view_count": len(step_views),
+                "findings": step_result.findings,
+                "decision_trace": step_result.decision_trace,
+                "step_index": step_idx,
+            })
+            step_idx += 1
             continue
 
     save_run(report)

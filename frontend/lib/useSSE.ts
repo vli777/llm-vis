@@ -31,6 +31,15 @@ const INITIAL_STATE: SSEState = {
   analysisInsights: null,
 };
 
+const FOUNDATION_STEP_TYPES = new Set([
+  "summary_stats",
+  "analysis_intents",
+  "intent_views",
+  "quality_overview",
+  "relationships",
+  "outliers_segments",
+]);
+
 /**
  * Custom hook for consuming SSE events from the EDA streaming endpoint.
  *
@@ -40,6 +49,8 @@ export function useSSE() {
   const [state, setState] = useState<SSEState>(INITIAL_STATE);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const appendModeRef = useRef<boolean>(false);
+  const suppressSegmentRef = useRef<boolean>(false);
 
   const close = useCallback(() => {
     if (eventSourceRef.current) {
@@ -61,6 +72,8 @@ export function useSSE() {
       opts?: { append?: boolean }
     ) => {
       close();
+      appendModeRef.current = Boolean(opts?.append);
+      suppressSegmentRef.current = false;
 
       setState((prev) => ({
         status: "connecting",
@@ -96,6 +109,7 @@ export function useSSE() {
       });
 
       es.addEventListener("analysis_intents", (e: MessageEvent) => {
+        if (appendModeRef.current) return;
         const data: AnalysisInsights = JSON.parse(e.data);
         setState((prev) => ({
           ...prev,
@@ -105,6 +119,11 @@ export function useSSE() {
 
       es.addEventListener("step_started", (e: MessageEvent) => {
         const data: SSEEventData = JSON.parse(e.data);
+        if (appendModeRef.current && FOUNDATION_STEP_TYPES.has(data.step_type)) {
+          suppressSegmentRef.current = true;
+          return;
+        }
+        suppressSegmentRef.current = false;
         setState((prev) => ({
           ...prev,
           progress: `Running ${data.step_type?.replace(/_/g, " ")}...`,
@@ -133,6 +152,9 @@ export function useSSE() {
 
       es.addEventListener("view_ready", (e: MessageEvent) => {
         const view: ViewResult = JSON.parse(e.data);
+        if (appendModeRef.current && suppressSegmentRef.current) {
+          return;
+        }
         setState((prev) => {
           const segments = [...prev.segments];
           if (segments.length === 0) {
@@ -155,6 +177,9 @@ export function useSSE() {
 
       es.addEventListener("step_summary", (e: MessageEvent) => {
         const data: SSEEventData = JSON.parse(e.data);
+        if (appendModeRef.current && suppressSegmentRef.current) {
+          return;
+        }
         setState((prev) => {
           const segments = [...prev.segments];
           if (segments.length > 0) {

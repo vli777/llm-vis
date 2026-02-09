@@ -21,6 +21,15 @@ const STEP_LABELS: Record<string, string> = {
   query_driven: "Query Analysis",
 };
 
+const FOUNDATION_STEP_TYPES = new Set([
+  "summary_stats",
+  "analysis_intents",
+  "intent_views",
+  "quality_overview",
+  "relationships",
+  "outliers_segments",
+]);
+
 export default function Page() {
   const [tables, setTables] = useState<any[]>([]);
   const [reports, setReports] = useState<
@@ -312,6 +321,17 @@ export default function Page() {
               syncViewsById.set(v.id, v);
             }
             const showProfile = runIndex === 0 && !run.query;
+            const isQueryRun = Boolean(run.query && run.query.trim().length > 0);
+            let steps = report.steps;
+            if (isQueryRun) {
+              const querySteps = steps.filter(
+                (s) => s.step_type === "query_driven"
+              );
+              steps =
+                querySteps.length > 0
+                  ? querySteps
+                  : steps.filter((s) => !FOUNDATION_STEP_TYPES.has(s.step_type));
+            }
 
             return (
               <div key={runIndex} className="mb-8">
@@ -333,7 +353,7 @@ export default function Page() {
                 )}
 
                 {/* Steps with their views — same notebook layout */}
-                {report.steps.map((step, si) => {
+                {steps.map((step, si) => {
                   const tableViewIds = step.views.filter((id) => {
                     const v = syncViewsById.get(id);
                     return v && v.spec.chart_type === "table";
