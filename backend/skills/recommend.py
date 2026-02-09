@@ -22,6 +22,8 @@ from core.models import (
     StepType,
     ViewPlan,
 )
+from skills.query_tools import query_tool_plans
+from skills.query_planner import plan_query_tools
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +242,7 @@ def _outlier_candidates(profile: DataProfile) -> List[ViewPlan]:
 
 
 def _query_driven_candidates(
-    profile: DataProfile, *, query: str = "",
+    profile: DataProfile, *, query: str = "", context: Optional[Dict[str, object]] = None,
 ) -> List[ViewPlan]:
     """
     Generate candidates guided by a user's natural language query.
@@ -251,6 +253,12 @@ def _query_driven_candidates(
     plans: List[ViewPlan] = []
     if not query:
         return plans
+
+    # Agent tool selection (LLM) -> specialized query skills
+    tools = plan_query_tools(profile, query, context=context)
+    tool_plans = query_tool_plans(profile, query, tools=tools)
+    if tool_plans:
+        return tool_plans
 
     tokens = set(re.findall(r"[a-z0-9]+", query.lower()))
 
@@ -412,10 +420,11 @@ def generate_candidates(
     *,
     query: str = "",
     intents: Optional[List[Dict[str, object]]] = None,
+    context: Optional[Dict[str, object]] = None,
 ) -> List[ViewPlan]:
     """Generate candidate ViewPlans for a given analysis step."""
     if step_type == StepType.query_driven:
-        return _query_driven_candidates(profile, query=query)
+        return _query_driven_candidates(profile, query=query, context=context)
     if step_type == StepType.intent_views:
         all_candidates = (
             _quality_candidates(profile)
