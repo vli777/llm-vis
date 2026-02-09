@@ -454,6 +454,353 @@ def _build_table(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
     return df_to_records_safe(subset)
 
 
+def _tag_value(tags: List[str], key: str) -> Optional[str]:
+    prefix = f"{key}="
+    for t in tags:
+        if t.startswith(prefix):
+            return t[len(prefix):]
+    return None
+
+
+def _parse_percentile_ranges(tag_value: Optional[str]) -> List[tuple[int, int]]:
+    if not tag_value:
+        return []
+    ranges = []
+    for part in tag_value.split(";"):
+        part = part.strip()
+        if not part or "-" not in part:
+            continue
+        lo_str, hi_str = part.split("-", 1)
+        try:
+            lo = int(lo_str)
+            hi = int(hi_str)
+        except ValueError:
+            continue
+        if lo < 0 or hi > 100:
+            continue
+        if lo > hi:
+            lo, hi = hi, lo
+        ranges.append((lo, hi))
+    return ranges
+
+
+def _coerce_time(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    try:
+        return pd.to_datetime(series, errors="coerce")
+    except Exception:
+        return series
+
+
+def _build_percentile_compare(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    """Compare percentile groups for a metric, optionally across time."""
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    entity = resolve_col(_tag_value(plan.tags, "entity"), df)
+    compare = _tag_value(plan.tags, "compare") or ""
+    ranges = _parse_percentile_ranges(_tag_value(plan.tags, "percentiles"))
+
+    if not metric or metric not in df.columns or not ranges:
+        return []
+
+    base = df[[metric]].copy()
+    base[metric] = smart_numeric_series(base[metric])
+    base = base.dropna(subset=[metric])
+    if base.empty:
+        return []
+
+    total = len(base)
+    values = base[metric]
+
+    def group_stats(series: pd.Series, label: str) -> Dict[str, Any]:
+        s = series.dropna()
+        if s.empty:
+            return {"group": label, "count": 0, "mean": None, "median": None, "pct_of_rows": 0.0}
+        return {
+            "group": label,
+            "count": int(len(s)),
+            "mean": round(float(s.mean()), 4),
+            "median": round(float(s.median()), 4),
+            "pct_of_rows": round(100.0 * len(s) / max(1, total), 2),
+        }
+
+    # If we can compute change across time, do so
+    if compare == "change" and temporal and temporal in df.columns:
+        work_cols = [metric, temporal]
+        if entity and entity in df.columns:
+            work_cols.append(entity)
+        work = df[work_cols].copy()
+        work[metric] = smart_numeric_series(work[metric])
+        work = work.dropna(subset=[metric])
+        if work.empty:
+            return []
+        work["_time"] = _coerce_time(work[temporal])
+        work = work.dropna(subset=["_time"])
+        if work.empty:
+            return []
+
+        records: List[Dict[str, Any]] = []
+        if entity and entity in work.columns:
+            idx_min = work.groupby(entity)["_time"].idxmin()
+            idx_max = work.groupby(entity)["_time"].idxmax()
+            base_df = work.loc[idx_min, [entity, metric]].set_index(entity)
+            last_df = work.loc[idx_max, [entity, metric]].set_index(entity)
+            joined = base_df.join(last_df, lsuffix="_base", rsuffix="_last", how="inner")
+            if joined.empty:
+                return []
+            joined["change"] = joined[f"{metric}_last"] - joined[f"{metric}_base"]
+            metric_series = joined[f"{metric}_base"]
+            for lo, hi in ranges:
+                lo_v = float(np.percentile(metric_series, lo))
+                hi_v = float(np.percentile(metric_series, hi))
+                mask = (metric_series >= lo_v) & (metric_series <= hi_v)
+                subset = joined.loc[mask]
+                stats = group_stats(subset["change"], f"P{lo}-{hi}")
+                stats["mean_baseline"] = round(float(subset[f"{metric}_base"].mean()), 4) if len(subset) else None
+                stats["mean_latest"] = round(float(subset[f"{metric}_last"].mean()), 4) if len(subset) else None
+                stats["mean_change"] = stats.pop("mean")
+                stats["median_change"] = stats.pop("median")
+                records.append(stats)
+            return records
+
+        # No entity: compare first vs last time using same percentile bounds
+        time_vals = work["_time"].dropna().sort_values()
+        if time_vals.empty:
+            return []
+        first_t = time_vals.iloc[0]
+        last_t = time_vals.iloc[-1]
+        base_t = work[work["_time"] == first_t][metric].dropna()
+        last_t_series = work[work["_time"] == last_t][metric].dropna()
+        if base_t.empty or last_t_series.empty:
+            return []
+        for lo, hi in ranges:
+            lo_v = float(np.percentile(base_t, lo))
+            hi_v = float(np.percentile(base_t, hi))
+            base_subset = base_t[(base_t >= lo_v) & (base_t <= hi_v)]
+            last_subset = last_t_series[(last_t_series >= lo_v) & (last_t_series <= hi_v)]
+            stats = group_stats(last_subset - base_subset.mean(), f"P{lo}-{hi}")
+            stats["mean_baseline"] = round(float(base_subset.mean()), 4) if len(base_subset) else None
+            stats["mean_latest"] = round(float(last_subset.mean()), 4) if len(last_subset) else None
+            stats["mean_change"] = stats.pop("mean")
+            stats["median_change"] = stats.pop("median")
+            records.append(stats)
+        return records
+
+    # Fallback: compare levels without change
+    records = []
+    for lo, hi in ranges:
+        lo_v = float(np.percentile(values, lo))
+        hi_v = float(np.percentile(values, hi))
+        subset = values[(values >= lo_v) & (values <= hi_v)]
+        records.append(group_stats(subset, f"P{lo}-{hi}"))
+    return records
+
+
+def _build_linear_regression(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    x_field = _tag_value(plan.tags, "x") or (plan.encoding.x.field if plan.encoding.x else None)
+    y_field = _tag_value(plan.tags, "y") or (plan.encoding.y.field if plan.encoding.y else None)
+    x_field = resolve_col(x_field, df)
+    y_field = resolve_col(y_field, df)
+    if not x_field or not y_field:
+        return []
+    if x_field not in df.columns or y_field not in df.columns:
+        return []
+
+    x = smart_numeric_series(df[x_field])
+    y = smart_numeric_series(df[y_field])
+    mask = (~x.isna()) & (~y.isna())
+    x = x[mask]
+    y = y[mask]
+    if len(x) < 3:
+        return []
+
+    X = np.column_stack([np.ones(len(x)), x.to_numpy()])
+    beta, *_ = np.linalg.lstsq(X, y.to_numpy(), rcond=None)
+    y_pred = X @ beta
+    ss_res = float(np.sum((y.to_numpy() - y_pred) ** 2))
+    ss_tot = float(np.sum((y.to_numpy() - y.mean()) ** 2))
+    r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    return [
+        {"type": "coef", "term": "intercept", "value": round(float(beta[0]), 6)},
+        {"type": "coef", "term": x_field, "value": round(float(beta[1]), 6)},
+        {"type": "metric", "term": "r2", "value": round(r2, 6)},
+        {"type": "metric", "term": "n", "value": int(len(x))},
+    ]
+
+
+def _sigmoid(z: np.ndarray) -> np.ndarray:
+    return 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+
+
+def _build_logistic_regression(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    x_field = _tag_value(plan.tags, "x") or (plan.encoding.x.field if plan.encoding.x else None)
+    y_field = _tag_value(plan.tags, "y") or (plan.encoding.y.field if plan.encoding.y else None)
+    x_field = resolve_col(x_field, df)
+    y_field = resolve_col(y_field, df)
+    if not x_field or not y_field:
+        return []
+    if x_field not in df.columns or y_field not in df.columns:
+        return []
+
+    x = smart_numeric_series(df[x_field])
+    y_raw = df[y_field]
+    y_unique = y_raw.dropna().unique().tolist()
+    if len(y_unique) != 2:
+        return []
+    y_map = {y_unique[0]: 0, y_unique[1]: 1}
+    y = y_raw.map(y_map)
+
+    mask = (~x.isna()) & (~y.isna())
+    x = x[mask]
+    y = y[mask]
+    if len(x) < 5:
+        return []
+
+    # Standardize predictor
+    x_mean = float(x.mean())
+    x_std = float(x.std()) or 1.0
+    xz = (x - x_mean) / x_std
+
+    # Simple gradient descent
+    w0, w1 = 0.0, 0.0
+    lr = 0.2
+    for _ in range(400):
+        z = w0 + w1 * xz.to_numpy()
+        p = _sigmoid(z)
+        grad0 = float((p - y.to_numpy()).mean())
+        grad1 = float(((p - y.to_numpy()) * xz.to_numpy()).mean())
+        w0 -= lr * grad0
+        w1 -= lr * grad1
+
+    z = w0 + w1 * xz.to_numpy()
+    p = _sigmoid(z)
+    preds = (p >= 0.5).astype(int)
+    acc = float((preds == y.to_numpy()).mean())
+
+    return [
+        {"type": "coef", "term": "intercept", "value": round(float(w0), 6)},
+        {"type": "coef", "term": x_field, "value": round(float(w1), 6), "note": "standardized x"},
+        {"type": "metric", "term": "accuracy", "value": round(acc, 6)},
+        {"type": "metric", "term": "n", "value": int(len(x))},
+        {"type": "metric", "term": "positive_label", "value": str(y_unique[1])[:50]},
+    ]
+
+
+def _build_segmentation(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    group = resolve_col(_tag_value(plan.tags, "group"), df)
+    if not metric or not group:
+        return []
+    if metric not in df.columns or group not in df.columns:
+        return []
+
+    work = df[[metric, group]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work = work.dropna(subset=[metric])
+    if work.empty:
+        return []
+
+    total = len(work)
+    agg = (
+        work.groupby(group)[metric]
+        .agg(["count", "mean", "median", "sum"])
+        .reset_index()
+    )
+    agg["pct_of_rows"] = agg["count"].apply(lambda v: round(100.0 * v / max(1, total), 2))
+    agg = agg.sort_values("mean", ascending=False)
+
+    limit = plan.options.top_n or 15
+    if len(agg) > limit:
+        agg = agg.head(limit)
+
+    return df_to_records_safe(agg)
+
+
+def _build_cohort_change(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    entity = resolve_col(_tag_value(plan.tags, "entity"), df)
+    if not metric or not temporal or not entity:
+        return []
+    if metric not in df.columns or temporal not in df.columns or entity not in df.columns:
+        return []
+
+    work = df[[metric, temporal, entity]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work = work.dropna(subset=[metric])
+    if work.empty:
+        return []
+
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=["_time"])
+    if work.empty:
+        return []
+
+    # Cohort by first observed period (year-month)
+    work["_period"] = work["_time"].dt.to_period("M").dt.to_timestamp()
+    first_period = work.groupby(entity)["_period"].min().rename("cohort")
+    work = work.join(first_period, on=entity)
+
+    # Compute change between first and last period per entity
+    idx_min = work.groupby(entity)["_period"].idxmin()
+    idx_max = work.groupby(entity)["_period"].idxmax()
+    base = work.loc[idx_min, [entity, metric, "cohort"]].set_index(entity)
+    last = work.loc[idx_max, [entity, metric]].set_index(entity)
+    joined = base.join(last, lsuffix="_base", rsuffix="_last", how="inner")
+    if joined.empty:
+        return []
+    joined["change"] = joined[f"{metric}_last"] - joined[f"{metric}_base"]
+
+    agg = (
+        joined.groupby("cohort")["change"]
+        .agg(["count", "mean", "median"])
+        .reset_index()
+        .sort_values("cohort")
+    )
+    agg["cohort"] = agg["cohort"].astype(str)
+    return df_to_records_safe(agg)
+
+
+def _build_group_comparison(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    group = resolve_col(_tag_value(plan.tags, "group"), df)
+    if not metric or not group:
+        return []
+    if metric not in df.columns or group not in df.columns:
+        return []
+
+    work = df[[metric, group]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work = work.dropna(subset=[metric, group])
+    if work.empty:
+        return []
+
+    counts = work[group].value_counts().head(2)
+    if len(counts) < 2:
+        return []
+
+    g1, g2 = counts.index[0], counts.index[1]
+    s1 = work[work[group] == g1][metric]
+    s2 = work[work[group] == g2][metric]
+    if s1.empty or s2.empty:
+        return []
+
+    mean1 = float(s1.mean())
+    mean2 = float(s2.mean())
+    diff = mean1 - mean2
+    pooled = float(np.sqrt((s1.var(ddof=1) + s2.var(ddof=1)) / 2.0)) if (len(s1) > 1 and len(s2) > 1) else 0.0
+    d = diff / pooled if pooled else 0.0
+
+    return [
+        {"group": str(g1), "mean": round(mean1, 6), "n": int(len(s1))},
+        {"group": str(g2), "mean": round(mean2, 6), "n": int(len(s2))},
+        {"metric": "diff_in_means", "value": round(diff, 6), "note": "naive (not causal)"},
+        {"metric": "cohens_d", "value": round(d, 6)},
+    ]
+
+
 def _build_describe_table(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """Build df.describe()-style summary with skew and kurtosis."""
     records: List[Dict[str, Any]] = []
@@ -595,8 +942,20 @@ def build_view(plan: ViewPlan, df: pd.DataFrame) -> ViewResult:
 
     All data is pre-aggregated: the frontend just renders.
     """
-    # Special case: missingness chart uses synthetic fields
-    if "__missing_pct__" in plan.fields_used or "missingness" in plan.tags:
+    # Special cases: skill-specific table builders
+    if "percentile_compare" in plan.tags:
+        data = _build_percentile_compare(plan, df)
+    elif "segmentation" in plan.tags:
+        data = _build_segmentation(plan, df)
+    elif "cohort_change" in plan.tags:
+        data = _build_cohort_change(plan, df)
+    elif "group_comparison" in plan.tags:
+        data = _build_group_comparison(plan, df)
+    elif "regression_linear" in plan.tags:
+        data = _build_linear_regression(plan, df)
+    elif "regression_logistic" in plan.tags:
+        data = _build_logistic_regression(plan, df)
+    elif "__missing_pct__" in plan.fields_used or "missingness" in plan.tags:
         data = _build_missingness(plan, df)
     else:
         builder = _BUILDERS.get(plan.chart_type, _build_table)
@@ -665,6 +1024,19 @@ def _auto_explanation(plan: ViewPlan, data: List[Dict[str, Any]], df: pd.DataFra
 
     if plan.chart_type == ChartType.hist:
         parts.append("To assess distribution shape and skew.")
+
+    if "percentile_compare" in plan.tags:
+        parts.append("To compare percentile groups and quantify differences.")
+    elif "segmentation" in plan.tags:
+        parts.append("To summarize the metric by group and spot segment differences.")
+    elif "cohort_change" in plan.tags:
+        parts.append("To track how cohorts change over time.")
+    elif "group_comparison" in plan.tags:
+        parts.append("To compare two groups (naive difference, not causal).")
+    elif "regression_linear" in plan.tags:
+        parts.append("To estimate a linear relationship between the selected variables.")
+    elif "regression_logistic" in plan.tags:
+        parts.append("To estimate classification likelihood from the selected predictor.")
 
     if not parts:
         parts.append(f"Selected {ct} chart to examine {fields}.")
