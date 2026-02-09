@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -801,6 +802,691 @@ def _build_group_comparison(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, 
     ]
 
 
+def _build_lgbm_regression(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    try:
+        import lightgbm as lgb
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import mean_squared_error, r2_score
+    except Exception:
+        return []
+
+    work = df.copy()
+    y = smart_numeric_series(work[target])
+    work = work.drop(columns=[target])
+    numeric_cols = [c for c in work.columns if pd.api.types.is_numeric_dtype(work[c])]
+    if not numeric_cols:
+        return []
+    X = work[numeric_cols].copy()
+    X = X.apply(smart_numeric_series)
+    mask = (~y.isna())
+    X = X[mask]
+    y = y[mask]
+    if len(y) < 30:
+        return []
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=0)
+    model = lgb.LGBMRegressor(n_estimators=200, random_state=0)
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    rmse = mean_squared_error(y_test, preds, squared=False)
+    r2 = r2_score(y_test, preds)
+
+    importances = model.feature_importances_
+    rows = [
+        {"metric": "rmse", "value": round(float(rmse), 6)},
+        {"metric": "r2", "value": round(float(r2), 6)},
+        {"metric": "n_train", "value": int(len(y_train))},
+        {"metric": "n_test", "value": int(len(y_test))},
+    ]
+    top = sorted(zip(numeric_cols, importances), key=lambda t: t[1], reverse=True)[:10]
+    for name, score in top:
+        rows.append({"feature": name, "importance": float(score)})
+    return rows
+
+
+def _build_lgbm_classification(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    try:
+        import lightgbm as lgb
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import accuracy_score, roc_auc_score
+        from sklearn.preprocessing import LabelEncoder
+    except Exception:
+        return []
+
+    y_raw = df[target].dropna()
+    if y_raw.nunique() < 2:
+        return []
+
+    work = df.copy()
+    y = work[target]
+    work = work.drop(columns=[target])
+    numeric_cols = [c for c in work.columns if pd.api.types.is_numeric_dtype(work[c])]
+    if not numeric_cols:
+        return []
+    X = work[numeric_cols].copy().apply(smart_numeric_series)
+    mask = (~y.isna())
+    X = X[mask]
+    y = y[mask]
+    if len(y) < 30:
+        return []
+
+    le = LabelEncoder()
+    y_enc = le.fit_transform(y.astype(str))
+    X_train, X_test, y_train, y_test = train_test_split(X, y_enc, test_size=0.2, random_state=0)
+    model = lgb.LGBMClassifier(n_estimators=200, random_state=0)
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    acc = accuracy_score(y_test, preds)
+    rows = [
+        {"metric": "accuracy", "value": round(float(acc), 6)},
+        {"metric": "n_train", "value": int(len(y_train))},
+        {"metric": "n_test", "value": int(len(y_test))},
+    ]
+
+    if len(le.classes_) == 2:
+        try:
+            proba = model.predict_proba(X_test)[:, 1]
+            auc = roc_auc_score(y_test, proba)
+            rows.append({"metric": "auc", "value": round(float(auc), 6)})
+        except Exception:
+            pass
+
+    importances = model.feature_importances_
+    top = sorted(zip(numeric_cols, importances), key=lambda t: t[1], reverse=True)[:10]
+    for name, score in top:
+        rows.append({"feature": name, "importance": float(score)})
+    return rows
+
+
+def _build_quantile_regression(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    x_field = resolve_col(_tag_value(plan.tags, "x"), df)
+    y_field = resolve_col(_tag_value(plan.tags, "y"), df)
+    if not x_field or not y_field:
+        return []
+    if x_field not in df.columns or y_field not in df.columns:
+        return []
+
+    try:
+        import statsmodels.api as sm
+    except Exception:
+        return []
+
+    x = smart_numeric_series(df[x_field])
+    y = smart_numeric_series(df[y_field])
+    mask = (~x.isna()) & (~y.isna())
+    x = x[mask]
+    y = y[mask]
+    if len(x) < 20:
+        return []
+
+    X = sm.add_constant(x.to_numpy())
+    rows: List[Dict[str, Any]] = []
+    for q in (0.1, 0.5, 0.9):
+        try:
+            model = sm.QuantReg(y.to_numpy(), X)
+            res = model.fit(q=q)
+            rows.append({"quantile": q, "term": "intercept", "value": float(res.params[0])})
+            rows.append({"quantile": q, "term": x_field, "value": float(res.params[1])})
+        except Exception:
+            continue
+    return rows
+
+
+def _build_seasonality_test(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not temporal:
+        return []
+    if metric not in df.columns or temporal not in df.columns:
+        return []
+
+    work = df[[metric, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, "_time"])
+    if work.empty:
+        return []
+    work = work.sort_values("_time")
+
+    series = work.set_index("_time")[metric].resample("M").mean().dropna()
+    if len(series) < 6:
+        return []
+
+    try:
+        from statsmodels.tsa.stattools import acf
+    except Exception:
+        return []
+    vals = acf(series.values, nlags=min(24, len(series) - 1), fft=False)
+    rows = []
+    for lag in range(1, min(13, len(vals))):
+        rows.append({"lag": lag, "acf": round(float(vals[lag]), 6)})
+    rows.sort(key=lambda r: abs(r["acf"]), reverse=True)
+    return rows[:5]
+
+
+def _build_autocorrelation_test(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not temporal:
+        return []
+    if metric not in df.columns or temporal not in df.columns:
+        return []
+
+    work = df[[metric, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, "_time"])
+    if work.empty:
+        return []
+    work = work.sort_values("_time")
+    series = work[metric].values
+    if len(series) < 10:
+        return []
+
+    try:
+        from statsmodels.tsa.stattools import acf, pacf
+    except Exception:
+        return []
+    max_lag = min(10, len(series) - 1)
+    acf_vals = acf(series, nlags=max_lag, fft=False)
+    pacf_vals = pacf(series, nlags=max_lag, method="yw")
+    rows = []
+    for lag in range(1, max_lag + 1):
+        rows.append({"lag": lag, "acf": round(float(acf_vals[lag]), 6), "pacf": round(float(pacf_vals[lag]), 6)})
+    return rows
+
+
+def _build_lag_feature_search(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not temporal:
+        return []
+    work = df[[metric, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, "_time"]).sort_values("_time")
+    if len(work) < 20:
+        return []
+    series = work[metric].values
+    rows = []
+    for lag in range(1, min(13, len(series) // 3)):
+        corr = np.corrcoef(series[lag:], series[:-lag])[0, 1]
+        rows.append({"lag": lag, "corr": round(float(corr), 6)})
+    rows.sort(key=lambda r: abs(r["corr"]), reverse=True)
+    return rows[:6]
+
+
+def _build_rolling_stats(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not temporal:
+        return []
+    work = df[[metric, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, "_time"]).sort_values("_time")
+    if len(work) < 10:
+        return []
+
+    series = work.set_index("_time")[metric]
+    rows = []
+    for window in (7, 30):
+        roll = series.rolling(window=window, min_periods=max(2, window // 3))
+        mean_val = roll.mean().iloc[-1]
+        std_val = roll.std().iloc[-1]
+        rows.append({"window": window, "rolling_mean": round(float(mean_val), 6) if pd.notna(mean_val) else None,
+                     "rolling_std": round(float(std_val), 6) if pd.notna(std_val) else None})
+    return rows
+
+
+def _build_trend_breaks(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not temporal:
+        return []
+    work = df[[metric, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, "_time"]).sort_values("_time")
+    if len(work) < 10:
+        return []
+    n = len(work)
+    thirds = [work.iloc[: n // 3], work.iloc[n // 3: 2 * n // 3], work.iloc[2 * n // 3:]]
+    rows = []
+    for i, seg in enumerate(thirds, start=1):
+        if seg.empty:
+            continue
+        rows.append({"segment": i, "mean": round(float(seg[metric].mean()), 6), "n": int(len(seg))})
+    if len(rows) >= 2:
+        rows.append({"metric": "delta_seg3_seg1", "value": round(float(rows[-1]["mean"] - rows[0]["mean"]), 6)})
+    return rows
+
+
+def _build_numeric_transforms(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    if not metric or metric not in df.columns:
+        return []
+    s = smart_numeric_series(df[metric]).dropna()
+    if len(s) < 10:
+        return []
+    def skew(x: pd.Series) -> float:
+        return float(x.skew()) if len(x) > 2 else 0.0
+    rows = [{"transform": "none", "skew": round(skew(s), 6)}]
+    if (s >= 0).all():
+        rows.append({"transform": "log1p", "skew": round(skew(np.log1p(s)), 6)})
+        rows.append({"transform": "sqrt", "skew": round(skew(np.sqrt(s)), 6)})
+    return rows
+
+
+def _build_interaction_scan(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    y = smart_numeric_series(df[target])
+    features = [c for c in df.columns if c != target and pd.api.types.is_numeric_dtype(df[c])]
+    if len(features) < 2:
+        return []
+    rows = []
+    for i in range(min(5, len(features))):
+        for j in range(i + 1, min(6, len(features))):
+            a = smart_numeric_series(df[features[i]])
+            b = smart_numeric_series(df[features[j]])
+            inter = a * b
+            mask = (~y.isna()) & (~inter.isna())
+            if mask.sum() < 20:
+                continue
+            corr = np.corrcoef(inter[mask], y[mask])[0, 1]
+            rows.append({"feature_pair": f"{features[i]}*{features[j]}", "corr_with_target": round(float(corr), 6)})
+    rows.sort(key=lambda r: abs(r["corr_with_target"]), reverse=True)
+    return rows[:10]
+
+
+def _build_binning_optimizer(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    feature = resolve_col(_tag_value(plan.tags, "feature"), df)
+    if not target or not feature:
+        return []
+    x = smart_numeric_series(df[feature])
+    y = smart_numeric_series(df[target])
+    mask = (~x.isna()) & (~y.isna())
+    x = x[mask]
+    y = y[mask]
+    if len(x) < 20:
+        return []
+    bins = pd.qcut(x.rank(method="first"), q=5, duplicates="drop")
+    agg = pd.DataFrame({"bin": bins, "target": y}).groupby("bin")["target"].mean().reset_index()
+    agg["bin"] = agg["bin"].astype(str)
+    return df_to_records_safe(agg)
+
+
+def _build_date_part_features(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not temporal:
+        return []
+    work = df[[metric, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, "_time"])
+    if work.empty:
+        return []
+    work["month"] = work["_time"].dt.month
+    work["dow"] = work["_time"].dt.dayofweek
+    by_month = work.groupby("month")[metric].mean().reset_index()
+    by_month["part"] = "month"
+    by_dow = work.groupby("dow")[metric].mean().reset_index()
+    by_dow["part"] = "dow"
+    return df_to_records_safe(pd.concat([by_month, by_dow], ignore_index=True))
+
+
+def _build_target_encoding(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    feature = resolve_col(_tag_value(plan.tags, "feature"), df)
+    if not target or not feature:
+        return []
+    work = df[[target, feature]].copy()
+    work[target] = smart_numeric_series(work[target])
+    work = work.dropna(subset=[feature])
+    if work.empty:
+        return []
+    agg = work.groupby(feature)[target].agg(["count", "mean"]).reset_index()
+    agg = agg.sort_values("mean", ascending=False)
+    limit = plan.options.top_n or 15
+    agg = agg.head(limit)
+    return df_to_records_safe(agg)
+
+
+def _build_matched_comparison(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    treatment = resolve_col(_tag_value(plan.tags, "treatment"), df)
+    if not metric or not treatment:
+        return []
+    work = df.copy()
+    y = smart_numeric_series(work[metric])
+    t = work[treatment]
+    covars = [c for c in work.columns if c not in (metric, treatment) and pd.api.types.is_numeric_dtype(work[c])]
+    if not covars:
+        return []
+    X = work[covars].apply(smart_numeric_series)
+    mask = (~y.isna()) & (~t.isna())
+    X = X[mask]
+    y = y[mask]
+    t = t[mask]
+    if t.nunique() != 2 or len(y) < 30:
+        return []
+    try:
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.neighbors import NearestNeighbors
+    except Exception:
+        return []
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+    treated_mask = t.astype("string") == str(t.unique()[0])
+    X_t = Xs[treated_mask]
+    X_c = Xs[~treated_mask]
+    y_t = y[treated_mask]
+    y_c = y[~treated_mask]
+    if len(y_t) < 5 or len(y_c) < 5:
+        return []
+    nn = NearestNeighbors(n_neighbors=1).fit(X_c)
+    dist, idx = nn.kneighbors(X_t)
+    matched_y_c = y_c.iloc[idx.flatten()].reset_index(drop=True)
+    att = float((y_t.reset_index(drop=True) - matched_y_c).mean())
+    return [
+        {"metric": "att", "value": round(att, 6), "note": "naive matching"},
+        {"metric": "n_treated", "value": int(len(y_t))},
+        {"metric": "n_control", "value": int(len(y_c))},
+    ]
+
+
+def _build_diff_in_diff(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    metric = resolve_col(_tag_value(plan.tags, "metric"), df)
+    treatment = resolve_col(_tag_value(plan.tags, "treatment"), df)
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not metric or not treatment or not temporal:
+        return []
+    work = df[[metric, treatment, temporal]].copy()
+    work[metric] = smart_numeric_series(work[metric])
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=[metric, treatment, "_time"])
+    if work.empty:
+        return []
+    cut = work["_time"].median()
+    work["post"] = work["_time"] >= cut
+    groups = work.groupby([treatment, "post"])[metric].mean().reset_index()
+    if groups[treatment].nunique() != 2:
+        return []
+    t_vals = groups[treatment].unique().tolist()
+    pre_t = groups[(groups[treatment] == t_vals[0]) & (~groups["post"])][metric].mean()
+    post_t = groups[(groups[treatment] == t_vals[0]) & (groups["post"])][metric].mean()
+    pre_c = groups[(groups[treatment] == t_vals[1]) & (~groups["post"])][metric].mean()
+    post_c = groups[(groups[treatment] == t_vals[1]) & (groups["post"])][metric].mean()
+    did = float((post_t - pre_t) - (post_c - pre_c))
+    return [
+        {"group": str(t_vals[0]), "pre_mean": round(float(pre_t), 6), "post_mean": round(float(post_t), 6)},
+        {"group": str(t_vals[1]), "pre_mean": round(float(pre_c), 6), "post_mean": round(float(post_c), 6)},
+        {"metric": "diff_in_diff", "value": round(did, 6), "note": "naive"},
+    ]
+
+
+def _build_uplift_check(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    treatment = resolve_col(_tag_value(plan.tags, "treatment"), df)
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    segment = resolve_col(_tag_value(plan.tags, "segment"), df)
+    if not treatment or not target:
+        return []
+    work = df[[treatment, target] + ([segment] if segment else [])].copy()
+    work = work.dropna(subset=[treatment, target])
+    if work.empty:
+        return []
+    t_vals = work[treatment].astype("string").unique().tolist()
+    if len(t_vals) != 2:
+        return []
+    treated = t_vals[0]
+    control = t_vals[1]
+
+    def rate(s: pd.Series) -> float:
+        s_num = smart_numeric_series(s)
+        if s_num.dropna().empty:
+            return float((s.astype("string") == treated).mean())
+        return float(s_num.mean())
+
+    rows: List[Dict[str, Any]] = []
+    if segment and segment in work.columns:
+        for val, grp in work.groupby(segment):
+            rt = rate(grp[grp[treatment].astype("string") == treated][target])
+            rc = rate(grp[grp[treatment].astype("string") == control][target])
+            rows.append({"segment": str(val), "uplift": round(rt - rc, 6)})
+        rows = rows[:10]
+        return rows
+
+    rt = rate(work[work[treatment].astype("string") == treated][target])
+    rc = rate(work[work[treatment].astype("string") == control][target])
+    return [{"uplift": round(rt - rc, 6), "treated": treated, "control": control}]
+
+
+def _build_shap_summary(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    try:
+        import lightgbm as lgb
+        import shap
+    except Exception:
+        return []
+    work = df.copy()
+    y = work[target]
+    work = work.drop(columns=[target])
+    numeric_cols = [c for c in work.columns if pd.api.types.is_numeric_dtype(work[c])]
+    if not numeric_cols:
+        return []
+    X = work[numeric_cols].apply(smart_numeric_series)
+    mask = ~y.isna()
+    X = X[mask]
+    y = y[mask]
+    if len(y) < 50:
+        return []
+    X = X.sample(min(len(X), 2000), random_state=0)
+    y = y.loc[X.index]
+
+    is_class = y.nunique() <= 2
+    if is_class:
+        model = lgb.LGBMClassifier(n_estimators=200, random_state=0)
+    else:
+        model = lgb.LGBMRegressor(n_estimators=200, random_state=0)
+    model.fit(X, y)
+    explainer = shap.TreeExplainer(model)
+    shap_vals = explainer.shap_values(X)
+    if isinstance(shap_vals, list):
+        shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+    mean_abs = np.abs(shap_vals).mean(axis=0)
+    rows = []
+    for name, val in sorted(zip(numeric_cols, mean_abs), key=lambda t: t[1], reverse=True)[:15]:
+        rows.append({"feature": name, "mean_abs_shap": round(float(val), 6)})
+    return rows
+
+
+def _build_shap_dependence(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    try:
+        import lightgbm as lgb
+        import shap
+    except Exception:
+        return []
+    work = df.copy()
+    y = work[target]
+    work = work.drop(columns=[target])
+    numeric_cols = [c for c in work.columns if pd.api.types.is_numeric_dtype(work[c])]
+    if not numeric_cols:
+        return []
+    X = work[numeric_cols].apply(smart_numeric_series)
+    mask = ~y.isna()
+    X = X[mask]
+    y = y[mask]
+    if len(y) < 50:
+        return []
+    X = X.sample(min(len(X), 1000), random_state=0)
+    y = y.loc[X.index]
+
+    model = lgb.LGBMRegressor(n_estimators=200, random_state=0) if y.nunique() > 2 else lgb.LGBMClassifier(n_estimators=200, random_state=0)
+    model.fit(X, y)
+    explainer = shap.TreeExplainer(model)
+    shap_vals = explainer.shap_values(X)
+    if isinstance(shap_vals, list):
+        shap_vals = shap_vals[1] if len(shap_vals) > 1 else shap_vals[0]
+    mean_abs = np.abs(shap_vals).mean(axis=0)
+    top_idx = int(np.argmax(mean_abs))
+    feature = numeric_cols[top_idx]
+    vals = X[feature].values
+    svals = shap_vals[:, top_idx]
+    corr = float(np.corrcoef(vals, svals)[0, 1]) if len(vals) > 2 else 0.0
+    return [
+        {"feature": feature, "shap_mean": round(float(svals.mean()), 6), "shap_std": round(float(svals.std()), 6), "corr": round(corr, 6)}
+    ]
+
+
+def _build_partial_dependence(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    feature = resolve_col(_tag_value(plan.tags, "feature"), df)
+    if not target or not feature:
+        return []
+    try:
+        import lightgbm as lgb
+        from sklearn.inspection import partial_dependence
+    except Exception:
+        return []
+    work = df.copy()
+    y = work[target]
+    work = work.drop(columns=[target])
+    numeric_cols = [c for c in work.columns if pd.api.types.is_numeric_dtype(work[c])]
+    if feature not in numeric_cols:
+        return []
+    X = work[numeric_cols].apply(smart_numeric_series)
+    mask = ~y.isna()
+    X = X[mask]
+    y = y[mask]
+    if len(y) < 50:
+        return []
+
+    model = lgb.LGBMRegressor(n_estimators=200, random_state=0) if y.nunique() > 2 else lgb.LGBMClassifier(n_estimators=200, random_state=0)
+    model.fit(X, y)
+    pdp = partial_dependence(model, X, [feature], grid_resolution=20)
+    grid = pdp["values"][0]
+    vals = pdp["average"][0]
+    rows = [{"feature_value": float(g), "partial_dep": float(v)} for g, v in zip(grid, vals)]
+    return rows
+
+
+def _build_leakage_scan(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    y = smart_numeric_series(df[target])
+    rows = []
+    for col in df.columns:
+        if col == target or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        x = smart_numeric_series(df[col])
+        mask = (~x.isna()) & (~y.isna())
+        if mask.sum() < 20:
+            continue
+        corr = np.corrcoef(x[mask], y[mask])[0, 1]
+        rows.append({"feature": col, "corr": round(float(corr), 6)})
+    rows.sort(key=lambda r: abs(r["corr"]), reverse=True)
+    return rows[:15]
+
+
+def _build_drift_check(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    temporal = resolve_col(_tag_value(plan.tags, "temporal"), df)
+    if not temporal or temporal not in df.columns:
+        return []
+    work = df.copy()
+    work["_time"] = _coerce_time(work[temporal])
+    work = work.dropna(subset=["_time"])
+    if work.empty:
+        return []
+    cut = work["_time"].median()
+    early = work[work["_time"] < cut]
+    late = work[work["_time"] >= cut]
+    rows = []
+    for col in work.columns:
+        if col in (temporal, "_time"):
+            continue
+        if pd.api.types.is_numeric_dtype(work[col]):
+            e = smart_numeric_series(early[col]).dropna()
+            l = smart_numeric_series(late[col]).dropna()
+            if e.empty or l.empty:
+                continue
+            diff = float(l.mean() - e.mean())
+            std = float(e.std() or 1.0)
+            rows.append({"feature": col, "mean_shift": round(diff, 6), "std_units": round(diff / std, 6)})
+    rows.sort(key=lambda r: abs(r["std_units"]), reverse=True)
+    return rows[:15]
+
+
+def _build_missingness_mechanism(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    target = resolve_col(_tag_value(plan.tags, "target"), df)
+    if not target or target not in df.columns:
+        return []
+    y = smart_numeric_series(df[target])
+    rows = []
+    for col in df.columns:
+        if col == target:
+            continue
+        miss = df[col].isna()
+        if miss.sum() == 0:
+            continue
+        y_miss = y[miss]
+        y_obs = y[~miss]
+        if y_miss.dropna().empty or y_obs.dropna().empty:
+            continue
+        diff = float(y_miss.mean() - y_obs.mean())
+        rows.append({"feature": col, "diff_in_target_mean": round(diff, 6), "missing_pct": round(100.0 * miss.mean(), 2)})
+    rows.sort(key=lambda r: abs(r["diff_in_target_mean"]), reverse=True)
+    return rows[:15]
+
+
+def _build_hypothesis_generator(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    numeric = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+    categorical = [c for c in df.columns if not pd.api.types.is_numeric_dtype(df[c])]
+    rows = []
+    if numeric and categorical:
+        rows.append({"hypothesis": f"{numeric[0]} differs by {categorical[0]}."})
+    if len(numeric) >= 2:
+        rows.append({"hypothesis": f"{numeric[0]} increases with {numeric[1]}."})
+    if numeric:
+        rows.append({"hypothesis": f"{numeric[0]} shows outliers or heavy skew."})
+    return rows
+
+
+def _build_test_selector(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    q = _tag_value(plan.tags, "query") or ""
+    tokens = set(re.findall(r"[a-z0-9]+", q.lower()))
+    tools = []
+    if tokens & {"seasonality", "lag", "autocorr"}:
+        tools.append("seasonality_test")
+    if tokens & {"regression", "predict"}:
+        tools.append("lgbm_regression")
+    if tokens & {"uplift", "treatment"}:
+        tools.append("uplift_check")
+    if not tools:
+        tools.append("generic_query_charts")
+    return [{"recommended_tool": t} for t in tools]
+
+
+def _build_result_validator(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
+    q = _tag_value(plan.tags, "query") or ""
+    return [{"status": "needs_evidence", "note": "Run a focused tool and compare effect sizes.", "query": q}]
+
+
 def _build_describe_table(df: pd.DataFrame) -> List[Dict[str, Any]]:
     """Build df.describe()-style summary with skew and kurtosis."""
     records: List[Dict[str, Any]] = []
@@ -951,10 +1637,60 @@ def build_view(plan: ViewPlan, df: pd.DataFrame) -> ViewResult:
         data = _build_cohort_change(plan, df)
     elif "group_comparison" in plan.tags:
         data = _build_group_comparison(plan, df)
+    elif "matched_comparison" in plan.tags:
+        data = _build_matched_comparison(plan, df)
+    elif "diff_in_diff" in plan.tags:
+        data = _build_diff_in_diff(plan, df)
+    elif "uplift_check" in plan.tags:
+        data = _build_uplift_check(plan, df)
     elif "regression_linear" in plan.tags:
         data = _build_linear_regression(plan, df)
     elif "regression_logistic" in plan.tags:
         data = _build_logistic_regression(plan, df)
+    elif "lgbm_regression" in plan.tags:
+        data = _build_lgbm_regression(plan, df)
+    elif "lgbm_classification" in plan.tags:
+        data = _build_lgbm_classification(plan, df)
+    elif "quantile_regression" in plan.tags:
+        data = _build_quantile_regression(plan, df)
+    elif "seasonality_test" in plan.tags:
+        data = _build_seasonality_test(plan, df)
+    elif "autocorrelation_test" in plan.tags:
+        data = _build_autocorrelation_test(plan, df)
+    elif "lag_feature_search" in plan.tags:
+        data = _build_lag_feature_search(plan, df)
+    elif "rolling_stats" in plan.tags:
+        data = _build_rolling_stats(plan, df)
+    elif "trend_breaks" in plan.tags:
+        data = _build_trend_breaks(plan, df)
+    elif "numeric_transforms" in plan.tags:
+        data = _build_numeric_transforms(plan, df)
+    elif "interaction_scan" in plan.tags:
+        data = _build_interaction_scan(plan, df)
+    elif "binning_optimizer" in plan.tags:
+        data = _build_binning_optimizer(plan, df)
+    elif "date_part_features" in plan.tags:
+        data = _build_date_part_features(plan, df)
+    elif "target_encoding" in plan.tags:
+        data = _build_target_encoding(plan, df)
+    elif "shap_summary" in plan.tags:
+        data = _build_shap_summary(plan, df)
+    elif "shap_dependence" in plan.tags:
+        data = _build_shap_dependence(plan, df)
+    elif "partial_dependence" in plan.tags:
+        data = _build_partial_dependence(plan, df)
+    elif "leakage_scan" in plan.tags:
+        data = _build_leakage_scan(plan, df)
+    elif "drift_check" in plan.tags:
+        data = _build_drift_check(plan, df)
+    elif "missingness_mechanism" in plan.tags:
+        data = _build_missingness_mechanism(plan, df)
+    elif "hypothesis_generator" in plan.tags:
+        data = _build_hypothesis_generator(plan, df)
+    elif "test_selector" in plan.tags:
+        data = _build_test_selector(plan, df)
+    elif "result_validator" in plan.tags:
+        data = _build_result_validator(plan, df)
     elif "__missing_pct__" in plan.fields_used or "missingness" in plan.tags:
         data = _build_missingness(plan, df)
     else:
@@ -1033,10 +1769,56 @@ def _auto_explanation(plan: ViewPlan, data: List[Dict[str, Any]], df: pd.DataFra
         parts.append("To track how cohorts change over time.")
     elif "group_comparison" in plan.tags:
         parts.append("To compare two groups (naive difference, not causal).")
+    elif "matched_comparison" in plan.tags:
+        parts.append("To estimate treated vs control effect via matching.")
+    elif "diff_in_diff" in plan.tags:
+        parts.append("To estimate a pre/post treatment effect (naive DiD).")
+    elif "uplift_check" in plan.tags:
+        parts.append("To estimate uplift between treated and control groups.")
     elif "regression_linear" in plan.tags:
         parts.append("To estimate a linear relationship between the selected variables.")
     elif "regression_logistic" in plan.tags:
         parts.append("To estimate classification likelihood from the selected predictor.")
+    elif "lgbm_regression" in plan.tags or "lgbm_classification" in plan.tags:
+        parts.append("To fit a non-linear model and inspect feature importance.")
+    elif "quantile_regression" in plan.tags:
+        parts.append("To compare effects across outcome quantiles.")
+    elif "seasonality_test" in plan.tags:
+        parts.append("To test for seasonal signal in the time series.")
+    elif "autocorrelation_test" in plan.tags:
+        parts.append("To summarize autocorrelation structure.")
+    elif "lag_feature_search" in plan.tags:
+        parts.append("To identify predictive lag candidates.")
+    elif "rolling_stats" in plan.tags:
+        parts.append("To summarize rolling mean/volatility.")
+    elif "trend_breaks" in plan.tags:
+        parts.append("To check for regime shifts over time.")
+    elif "numeric_transforms" in plan.tags:
+        parts.append("To assess whether transformations reduce skew.")
+    elif "interaction_scan" in plan.tags:
+        parts.append("To scan for useful interaction features.")
+    elif "binning_optimizer" in plan.tags:
+        parts.append("To capture non-linear effects via binning.")
+    elif "date_part_features" in plan.tags:
+        parts.append("To test date-part feature signal.")
+    elif "target_encoding" in plan.tags:
+        parts.append("To evaluate categorical target encoding.")
+    elif "shap_summary" in plan.tags or "shap_dependence" in plan.tags:
+        parts.append("To explain model predictions with SHAP.")
+    elif "partial_dependence" in plan.tags:
+        parts.append("To summarize partial dependence for a feature.")
+    elif "leakage_scan" in plan.tags:
+        parts.append("To check for near-leakage predictors.")
+    elif "drift_check" in plan.tags:
+        parts.append("To compare distributions across time splits.")
+    elif "missingness_mechanism" in plan.tags:
+        parts.append("To test missingness impact on target.")
+    elif "hypothesis_generator" in plan.tags:
+        parts.append("To propose testable hypotheses.")
+    elif "test_selector" in plan.tags:
+        parts.append("To map hypotheses to recommended tests.")
+    elif "result_validator" in plan.tags:
+        parts.append("To validate results against the hypothesis.")
 
     if not parts:
         parts.append(f"Selected {ct} chart to examine {fields}.")
