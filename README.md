@@ -1,6 +1,6 @@
 # Auto-EDA
 
-Agent-driven, autonomous exploratory data analysis. Upload a dataset, describe what you want to learn, and the system profiles the data, reasons about intent, and returns the best visual explanation — all streamed in real time.
+Agent-driven, autonomous exploratory data analysis. Upload a dataset, the system profiles the data, reasons about intent, and returns a notebook-like report. You can additionally submit queries that the agent will explore further.
 
 ![Recording 2026-02-08 223201 (1)](https://github.com/user-attachments/assets/970026c2-8785-47d0-8632-07a8e633432f)
 
