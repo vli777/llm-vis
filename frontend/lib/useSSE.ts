@@ -22,20 +22,22 @@ export type SSEState = {
 
 type SSEEventData = Record<string, any>;
 
+const INITIAL_STATE: SSEState = {
+  status: "idle",
+  segments: [],
+  progress: "",
+  error: null,
+  runId: null,
+  analysisInsights: null,
+};
+
 /**
  * Custom hook for consuming SSE events from the EDA streaming endpoint.
  *
  * Views are grouped into step segments for notebook-style sequential rendering.
  */
 export function useSSE() {
-  const [state, setState] = useState<SSEState>({
-    status: "idle",
-    segments: [],
-    progress: "",
-    error: null,
-    runId: null,
-    analysisInsights: null,
-  });
+  const [state, setState] = useState<SSEState>(INITIAL_STATE);
 
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -46,18 +48,28 @@ export function useSSE() {
     }
   }, []);
 
+  const reset = useCallback(() => {
+    close();
+    setState(INITIAL_STATE);
+  }, [close]);
+
   const connect = useCallback(
-    (runId: string, sessionId: string, baseUrl: string) => {
+    (
+      runId: string,
+      sessionId: string,
+      baseUrl: string,
+      opts?: { append?: boolean }
+    ) => {
       close();
 
-      setState({
+      setState((prev) => ({
         status: "connecting",
-        segments: [],
+        segments: opts?.append ? prev.segments : [],
         progress: "Connecting...",
         error: null,
         runId,
-        analysisInsights: null,
-      });
+        analysisInsights: opts?.append ? prev.analysisInsights : null,
+      }));
 
       const url = `${baseUrl}/api/runs/${runId}/events?session_id=${encodeURIComponent(sessionId)}`;
       const es = new EventSource(url);
@@ -206,5 +218,5 @@ export function useSSE() {
     return () => close();
   }, [close]);
 
-  return { state, connect, close };
+  return { state, connect, close, reset };
 }

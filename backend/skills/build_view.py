@@ -224,6 +224,14 @@ def _aggregate_line(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
     tmp[y_field] = _coerce_numeric(df, y_field)
     tmp = tmp.dropna(subset=[y_field])
 
+    # Include color/group field if present
+    color_enc = plan.encoding.color
+    c_field = None
+    if color_enc:
+        c_field = _resolve(color_enc.field, df)
+        if c_field and c_field in df.columns:
+            tmp[c_field] = df.loc[tmp.index, c_field]
+
     # Group if temporal: aggregate by the temporal unit
     if x_enc.type == "temporal":
         try:
@@ -234,31 +242,30 @@ def _aggregate_line(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
                 valid_x = x_series.dropna()
                 if (not valid_x.empty
                         and valid_x.min() >= 1900 and valid_x.max() <= 2100):
-                    # Treat as year labels — convert to string for display
-                    tmp[x_field] = x_series.astype(int).astype(str)
-                    tmp = tmp.sort_values(x_field)
+                    # Treat as year labels — group by year
+                    tmp[x_field] = x_series.astype(int)
                 else:
                     # Non-year numeric → try datetime parsing
                     tmp[x_field] = pd.to_datetime(x_series, unit="s", errors="coerce")
                     tmp = tmp.dropna(subset=[x_field])
-                    tmp = tmp.sort_values(x_field)
                     tmp[x_field] = tmp[x_field].dt.strftime("%Y-%m-%dT%H:%M:%S")
             else:
                 tmp[x_field] = pd.to_datetime(tmp[x_field], errors="coerce")
                 tmp = tmp.dropna(subset=[x_field])
-                tmp = tmp.sort_values(x_field)
                 tmp[x_field] = tmp[x_field].dt.strftime("%Y-%m-%dT%H:%M:%S")
         except Exception:
             tmp = tmp.sort_values(x_field)
+        # Aggregate by temporal x (and optional color group)
+        agg = (y_enc.aggregate or "mean").lower()
+        if agg not in {"sum", "mean", "min", "max", "median", "count"}:
+            agg = "mean"
+        group_cols = [x_field]
+        if c_field:
+            group_cols.append(c_field)
+        tmp = tmp.groupby(group_cols, dropna=False)[y_field].agg(agg).reset_index()
+        tmp = tmp.sort_values(x_field)
     else:
         tmp = tmp.sort_values(x_field)
-
-    # Include color/group field if present
-    color_enc = plan.encoding.color
-    if color_enc:
-        c_field = _resolve(color_enc.field, df)
-        if c_field and c_field in df.columns:
-            tmp[c_field] = df.loc[tmp.index, c_field]
 
     if len(tmp) > 2000:
         tmp = tmp.head(2000)
@@ -323,15 +330,46 @@ def _build_histogram(plan: ViewPlan, df: pd.DataFrame) -> List[Dict[str, Any]]:
         return []
 
     bin_count = plan.options.bin_count or 20
-    counts, edges = np.histogram(series, bins=bin_count)
-    records = []
+    records: List[Dict[str, Any]] = []
+
+    try:
+        p1 = float(np.percentile(series, 1))
+        p99 = float(np.percentile(series, 99))
+    except Exception:
+        p1, p99 = float(series.min()), float(series.max())
+
+    # Tail bins
+    below = series[series < p1]
+    above = series[series > p99]
+    mid = series[(series >= p1) & (series <= p99)]
+
+    if len(below) > 0:
+        records.append({
+            "bin_start": float(series.min()),
+            "bin_end": p1,
+            "bin_label": "<P1",
+            "count": int(len(below)),
+            "percent": round(100.0 * len(below) / total, 2),
+        })
+
+    mid_bins = max(1, bin_count - 2)
+    counts, edges = np.histogram(mid, bins=mid_bins)
     for i, count in enumerate(counts):
         records.append({
             "bin_start": float(edges[i]),
             "bin_end": float(edges[i + 1]),
-            "bin_label": f"{edges[i]:.4g}-{edges[i+1]:.4g}",
+            "bin_label": f"B{i+1}: {edges[i]:.6g}-{edges[i+1]:.6g}",
             "count": int(count),
             "percent": round(100.0 * count / total, 2),
+        })
+
+    if len(above) > 0:
+        records.append({
+            "bin_start": p99,
+            "bin_end": float(series.max()),
+            "bin_label": ">P99",
+            "count": int(len(above)),
+            "percent": round(100.0 * len(above) / total, 2),
         })
 
     # Add percentile markers (used by frontend for reference lines)

@@ -23,7 +23,9 @@ const STEP_LABELS: Record<string, string> = {
 
 export default function Page() {
   const [tables, setTables] = useState<any[]>([]);
-  const [report, setReport] = useState<EDAReport | null>(null);
+  const [reports, setReports] = useState<
+    { report: EDAReport; query?: string }[]
+  >([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [useStreaming, setUseStreaming] = useState(true);
@@ -31,7 +33,12 @@ export default function Page() {
   const tablesReq = useRef<number>(0);
   const autoRunKey = useRef<string | null>(null);
 
-  const { state: sseState, connect: sseConnect, close: sseClose } = useSSE();
+  const {
+    state: sseState,
+    connect: sseConnect,
+    close: sseClose,
+    reset: sseReset,
+  } = useSSE();
 
   const refreshTables = async () => {
     const reqId = Date.now();
@@ -56,9 +63,9 @@ export default function Page() {
 
   const onUploaded = async () => {
     await refreshTables();
-    setReport(null);
+    setReports([]);
     setError(null);
-    sseClose();
+    sseReset();
   };
 
   const runEDA = async (query?: string, tablesOverride?: any[]) => {
@@ -68,10 +75,15 @@ export default function Page() {
       return;
     }
 
+    const isQuery = Boolean(query && query.trim().length > 0);
     setPending(true);
     setError(null);
-    setReport(null);
-    sseClose();
+    if (!isQuery) {
+      setReports([]);
+      sseReset();
+    } else {
+      sseClose();
+    }
 
     let connectedSSE = false;
     try {
@@ -84,7 +96,9 @@ export default function Page() {
           body
         );
         if (res.streaming && res.run_id) {
-          sseConnect(res.run_id, getSessionId(), API_BASE);
+          sseConnect(res.run_id, getSessionId(), API_BASE, {
+            append: isQuery,
+          });
           connectedSSE = true;
           return;
         }
@@ -92,7 +106,9 @@ export default function Page() {
 
       // Sync fallback
       const res = await apiPostJSON<EDAReport>("/api/runs", body);
-      setReport(res);
+      setReports((prev) =>
+        isQuery ? [...prev, { report: res, query }] : [{ report: res, query }]
+      );
     } catch (e: any) {
       console.error("EDA run failed:", e);
       setError(e?.message || "EDA run failed.");
@@ -119,7 +135,7 @@ export default function Page() {
       autoRunKey.current = null;
       return;
     }
-    if (report || sseState.segments.length > 0) return;
+    if (reports.length > 0 || sseState.segments.length > 0) return;
     if (sseState.status === "connecting" || sseState.status === "streaming") return;
 
     const key = tables
@@ -128,7 +144,7 @@ export default function Page() {
     if (autoRunKey.current === key) return;
     autoRunKey.current = key;
     void runEDA(undefined, tables);
-  }, [tables, pending, report, sseState.status, sseState.segments.length]);
+  }, [tables, pending, reports.length, sseState.status, sseState.segments.length]);
 
   const onPrompt = async (prompt: string) => {
     await runEDA(prompt);
@@ -139,14 +155,6 @@ export default function Page() {
   const hasSegments = sseState.segments.length > 0;
   const showStreamingUI =
     hasSegments || isStreaming || sseState.status === "complete";
-
-  // Build views map for sync mode
-  const syncViewsById = new Map<string, ViewResult>();
-  if (report) {
-    for (const v of report.views) {
-      syncViewsById.set(v.id, v);
-    }
-  }
 
   return (
     <div className="mx-auto max-w-[1200px] p-6 pb-28">
@@ -215,10 +223,7 @@ export default function Page() {
           )}
 
           {/* Step segments — rendered sequentially like a notebook */}
-          {sseState.segments
-            .slice()
-            .sort((a, b) => (a.step_index ?? 0) - (b.step_index ?? 0))
-            .map((segment, si) => {
+          {sseState.segments.map((segment, si) => {
             const tableViews = segment.views.filter(
               (v) => v.spec.chart_type === "table"
             );
@@ -298,106 +303,122 @@ export default function Page() {
       {/* ============================================================
           Synchronous Report (fallback when not streaming)
           ============================================================ */}
-      {report && !showStreamingUI && (
+      {reports.length > 0 && !showStreamingUI && (
         <div className="mt-6">
-          {/* Profile summary */}
-          {report.profile && (
-            <div className="mb-4 theme-panel p-3">
-              <h2 className="text-lg font-semibold theme-muted mb-1">
-                {report.table_name}
-              </h2>
-              <p className="text-sm theme-muted">
-                {report.profile.row_count.toLocaleString()} rows,{" "}
-                {report.profile.columns.length} columns
-              </p>
-            </div>
-          )}
-
-          {/* Steps with their views — same notebook layout */}
-          {report.steps.map((step, si) => {
-            const tableViewIds = step.views.filter((id) => {
-              const v = syncViewsById.get(id);
-              return v && v.spec.chart_type === "table";
-            });
-            const chartViewIds = step.views.filter((id) => {
-              const v = syncViewsById.get(id);
-              return v && v.spec.chart_type !== "table";
-            });
+          {reports.map((run, runIndex) => {
+            const report = run.report;
+            const syncViewsById = new Map<string, ViewResult>();
+            for (const v of report.views) {
+              syncViewsById.set(v.id, v);
+            }
+            const showProfile = runIndex === 0 && !run.query;
 
             return (
-              <div key={si} className="mb-6">
-                <div className="flex items-center gap-2 mb-3">
-                  <div className="h-6 w-6 rounded-full theme-chip flex items-center justify-center text-xs font-bold">
-                    {si + 1}
+              <div key={runIndex} className="mb-8">
+                {showProfile && report.profile && (
+                  <div className="mb-4 theme-panel p-3">
+                    <h2 className="text-lg font-semibold theme-muted mb-1">
+                      {report.table_name}
+                    </h2>
+                    <p className="text-sm theme-muted">
+                      {report.profile.row_count.toLocaleString()} rows,{" "}
+                      {report.profile.columns.length} columns
+                    </p>
                   </div>
-                  <h2 className="text-base font-semibold theme-muted">
-                    {step.headline}
-                  </h2>
-                </div>
-                <div className="trace-slot text-xs theme-muted">
-                  {step.decision_trace && (
-                    <span className="trace-fade">{step.decision_trace}</span>
-                  )}
-                </div>
-
-                {step.warnings.length > 0 && (
-                  <div className="mb-2 text-xs theme-accent">
-                    {step.warnings.map((w, wi) => (
-                      <div key={wi}>&#9888; {w}</div>
-                    ))}
+                )}
+                {run.query && (
+                  <div className="mb-3 text-sm theme-muted">
+                    Query: {run.query}
                   </div>
                 )}
 
-                {/* Summary tables — full width */}
-                {tableViewIds.map((viewId) => {
-                  const view = syncViewsById.get(viewId);
-                  if (!view) return null;
+                {/* Steps with their views — same notebook layout */}
+                {report.steps.map((step, si) => {
+                  const tableViewIds = step.views.filter((id) => {
+                    const v = syncViewsById.get(id);
+                    return v && v.spec.chart_type === "table";
+                  });
+                  const chartViewIds = step.views.filter((id) => {
+                    const v = syncViewsById.get(id);
+                    return v && v.spec.chart_type !== "table";
+                  });
+
                   return (
-                    <div
-                      key={view.id}
-                      className="mb-4 theme-panel p-4 flex flex-col gap-2"
-                    >
-                      {view.spec.title && (
-                        <h3 className="text-sm font-semibold theme-muted m-0">
-                          {view.spec.title}
-                        </h3>
-                      )}
-                      <div className="overflow-auto max-h-[600px]">
-                        <DataTable spec={view.spec} />
+                    <div key={si} className="mb-6">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="h-6 w-6 rounded-full theme-chip flex items-center justify-center text-xs font-bold">
+                          {si + 1}
+                        </div>
+                        <h2 className="text-base font-semibold theme-muted">
+                          {step.headline}
+                        </h2>
                       </div>
+                      <div className="trace-slot text-xs theme-muted">
+                        {step.decision_trace && (
+                          <span className="trace-fade">{step.decision_trace}</span>
+                        )}
+                      </div>
+
+                      {step.warnings.length > 0 && (
+                        <div className="mb-2 text-xs theme-accent">
+                          {step.warnings.map((w, wi) => (
+                            <div key={wi}>&#9888; {w}</div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Summary tables — full width */}
+                      {tableViewIds.map((viewId) => {
+                        const view = syncViewsById.get(viewId);
+                        if (!view) return null;
+                        return (
+                          <div
+                            key={view.id}
+                            className="mb-4 theme-panel p-4 flex flex-col gap-2"
+                          >
+                            {view.spec.title && (
+                              <h3 className="text-sm font-semibold theme-muted m-0">
+                                {view.spec.title}
+                              </h3>
+                            )}
+                            <div className="overflow-auto max-h-[600px]">
+                              <DataTable spec={view.spec} />
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {/* Chart views — 2-col grid */}
+                      {chartViewIds.length > 0 && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {chartViewIds.map((viewId) => {
+                            const view = syncViewsById.get(viewId);
+                            if (!view) return null;
+                            return (
+                              <div key={view.id} className="h-[400px] lg:h-[460px]">
+                                <RechartsCard
+                                  spec={view.spec}
+                                  explanation={view.explanation}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Findings */}
+                      {step.findings.length > 0 && (
+                        <div className="mt-3 p-3 theme-panel">
+                          <ul className="text-sm theme-muted list-disc list-inside space-y-1">
+                            {step.findings.map((f, fi) => (
+                              <li key={fi}>{f}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
-
-                {/* Chart views — 2-col grid */}
-                {chartViewIds.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {chartViewIds.map((viewId) => {
-                      const view = syncViewsById.get(viewId);
-                      if (!view) return null;
-                      return (
-                        <div key={view.id} className="h-[400px] lg:h-[460px]">
-                          <RechartsCard
-                            spec={view.spec}
-                            explanation={view.explanation}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                {/* Findings */}
-                {step.findings.length > 0 && (
-                  <div className="mt-3 p-3 theme-panel">
-                    <ul className="text-sm theme-muted list-disc list-inside space-y-1">
-                      {step.findings.map((f, fi) => (
-                        <li key={fi}>{f}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
               </div>
             );
           })}
