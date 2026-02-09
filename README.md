@@ -2,10 +2,7 @@
 
 Agent-driven, autonomous exploratory data analysis. Upload a dataset, describe what you want to learn, and the system profiles the data, reasons about intent, and returns the best visual explanation — all streamed in real time.
 
-<img width="1087" height="727" alt="Screenshot 2025-12-20 013125" src="https://github.com/user-attachments/assets/7502a23d-f896-4858-b775-3e18815f3192" />
-
-Example Prompt: ARR vs Valuation (log)
-<img width="1060" height="717" alt="image" src="https://github.com/user-attachments/assets/5142829e-83ef-4176-a6a2-3185bb724691" />
+![Recording 2026-02-08 223201 (1)](https://github.com/user-attachments/assets/970026c2-8785-47d0-8632-07a8e633432f)
 
 ## Tech Stack
 
